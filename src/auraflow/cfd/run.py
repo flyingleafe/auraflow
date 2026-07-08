@@ -24,6 +24,8 @@ checkpointing) to bound memory -- see the module notes. All *post-CFD* steps
 (sphere interpolation, FW-H) are differentiable as written.
 """
 
+from __future__ import annotations
+
 from typing import TYPE_CHECKING, Any
 
 import equinox as eqx
@@ -38,6 +40,7 @@ from auraflow.fwh.f1a import f1a_permeable_static
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from auraflow.fwh.geometry import radiation_vectors  # noqa: F401
+    from auraflow.viz.server import VizStreamer
 
 __all__ = [
     "SurfaceHistory",
@@ -85,6 +88,9 @@ def run_acoustic_case(
     n_steps: int,
     sample_every: int = 1,
     warmup_steps: int = 0,
+    viz: VizStreamer | None = None,
+    viz_field: str = "p",
+    viz_slice_axis: str = "z",
 ) -> SurfaceHistory:
     """Run a JAX-Fluids acoustic case and sample the permeable sphere.
 
@@ -99,6 +105,13 @@ def run_acoustic_case(
         n_steps: Number of integration steps (static int).
         sample_every: Sample the sphere every this many steps (static int).
         warmup_steps: Steps to run before the first sample (transient discard).
+        viz: Optional :class:`~auraflow.viz.server.VizStreamer` for live in-browser
+            visualization. When given, a downsampled mid-plane field slice and the
+            sphere overpressure ``p'`` are pushed every sample step (best-effort,
+            non-blocking; ``None`` = zero overhead). The scene (domain box, sphere
+            point cloud, slice plane) is published once before the march.
+        viz_field: Primitive field shown on the live slice (``"p"`` or ``"rho"``).
+        viz_slice_axis: Axis the live field slice is taken normal to.
 
     Returns:
         A :class:`SurfaceHistory` with ``tau`` starting at the first sampled
@@ -134,6 +147,14 @@ def run_acoustic_case(
 
     x, y, z = case.domain.cell_centers()
 
+    if viz is not None:
+        from auraflow.viz.cfd import cfd_scene_kwargs
+
+        viz.init_scene(
+            **cfd_scene_kwargs(case.domain, sphere, field=viz_field, slice_axis=viz_slice_axis)
+        )
+    p0 = float(case.medium.p0)
+
     rho_list: list[Array] = []
     u_list: list[Array] = []
     p_list: list[Array] = []
@@ -155,7 +176,27 @@ def run_acoustic_case(
         rho_list.append(rho_s)
         u_list.append(u_s)
         p_list.append(p_s)
-        tau_list.append(float(jxf_buffers.time_control_variables.physical_simulation_time))
+        t_now = float(jxf_buffers.time_control_variables.physical_simulation_time)
+        tau_list.append(t_now)
+
+        if viz is not None and viz.active:
+            from auraflow.viz.cfd import cfd_frame_kwargs
+
+            interior_np = jax.device_get(interior)
+            viz.push_frame(
+                **cfd_frame_kwargs(
+                    interior_np,
+                    x,
+                    y,
+                    z,
+                    jax.device_get(p_s),
+                    p0,
+                    t_now,
+                    len(tau_list) - 1,
+                    field=viz_field,
+                    slice_axis=viz_slice_axis,
+                )
+            )
 
     if not rho_list:
         raise ValueError("no samples collected; check n_steps/sample_every/warmup_steps")

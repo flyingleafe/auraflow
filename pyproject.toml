@@ -15,6 +15,12 @@ dependencies = [
 viz = [
     "matplotlib>=3.9",
 ]
+# Live in-browser 3D visualization: a WebSocket hub streaming simulation frames
+# to a self-contained three.js page. Kept separate from `viz` (matplotlib) so
+# neither pulls the other; base `import auraflow` needs neither.
+viz-live = [
+    "websockets>=13",
+]
 cfd = [
     "jaxfluids",
 ]
