@@ -1,0 +1,11 @@
+[job]
+outputs = ["results/**"]
+
+[job.resources]
+gpus = 1
+time = "1h"
+
+[job.env]
+# Explicit "uv", not "auto": on notebook backends (colab/kaggle) omnirun
+# rewrites auto -> system (ambient pip install), losing uv.lock pinning.
+kind = "uv"

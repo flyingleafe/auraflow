@@ -1,0 +1,3 @@
+[remote]
+endpoint_url = "https://d064390efe0e59d764d4f701b59d7b71.r2.cloudflarestorage.com"
+bucket = "ml-data-new"
