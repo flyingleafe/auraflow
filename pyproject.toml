@@ -21,6 +21,11 @@ cfd = [
 data = [
     "dload-ml>=0.3.0",
 ]
+# GPU workers (omnirun colab/kaggle/slurm jobs): CUDA-enabled jax.
+# Never install locally -- the dev box is CPU-only.
+gpu = [
+    "jax[cuda12]>=0.4.35",
+]
 
 [dependency-groups]
 dev = [
