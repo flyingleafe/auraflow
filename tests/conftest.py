@@ -1,5 +1,16 @@
-import jax
-import pytest
+import os
+
+# Force bitwise-deterministic GPU kernels BEFORE jax/XLA initializes. The suite
+# asserts bit-exact same-seed reproducibility (Griffin-Lim, flyover generation);
+# XLA's default GPU reductions are order-nondeterministic, which fails those
+# tests on CUDA while they pass on CPU. Costs some GPU test speed; irrelevant
+# for correctness.
+os.environ["XLA_FLAGS"] = (
+    os.environ.get("XLA_FLAGS", "") + " --xla_gpu_deterministic_ops=true"
+).strip()
+
+import jax  # noqa: E402
+import pytest  # noqa: E402
 
 jax.config.update("jax_enable_x64", True)
 
