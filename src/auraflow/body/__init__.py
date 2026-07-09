@@ -1,0 +1,64 @@
+"""General 3D-body core: meshes, model import, motion, SDF, FW-H sources.
+
+``auraflow.body`` generalizes the library from rotors to *any* 3D body or
+surface moving in (or vibrating within) a compressible fluid -- imported 3D
+models, loudspeaker membranes, airframes. See ``docs/architecture.md`` ->
+"Generalization principle (v2)".
+
+The pipeline is
+
+    TriMesh (imported or parametric)
+      x Motion (rigid pose(t) [+ optional surface vibration u_n(face, t)])
+      -> panel_histories -> FW-H source adapters -> auraflow.fwh -> signals
+
+Public API
+----------
+- Geometry: :class:`TriMesh`.
+- Import/export (optional ``mesh`` extra, lazy trimesh):
+  :func:`load_mesh`, :func:`save_mesh`.
+- Kinematics: :class:`Motion`, :class:`StaticPose`, :class:`ConstantVelocity`,
+  :class:`SpinMotion`, :class:`WaypointMotion`, :class:`ComposedMotion`,
+  :class:`SurfaceVibration`, :func:`pose_derivatives`, :func:`panel_histories`,
+  :class:`PanelHistories`.
+- FW-H sources: :func:`permeable_surface` (impermeable/speaker adapters: next task).
+- Signed distance: :func:`sdf_grid`, :func:`sdf_eval`.
+
+``import auraflow.body`` works without trimesh installed; only
+:func:`load_mesh` / :func:`save_mesh` / :func:`sdf_grid` require the ``mesh`` extra.
+"""
+
+from auraflow.body.io import load_mesh, save_mesh
+from auraflow.body.mesh import TriMesh
+from auraflow.body.motion import (
+    ComposedMotion,
+    ConstantVelocity,
+    Motion,
+    PanelHistories,
+    SpinMotion,
+    StaticPose,
+    SurfaceVibration,
+    WaypointMotion,
+    panel_histories,
+    pose_derivatives,
+)
+from auraflow.body.sdf import sdf_eval, sdf_grid
+from auraflow.body.sources import permeable_surface
+
+__all__ = [
+    "ComposedMotion",
+    "ConstantVelocity",
+    "Motion",
+    "PanelHistories",
+    "SpinMotion",
+    "StaticPose",
+    "SurfaceVibration",
+    "TriMesh",
+    "WaypointMotion",
+    "load_mesh",
+    "panel_histories",
+    "permeable_surface",
+    "pose_derivatives",
+    "save_mesh",
+    "sdf_eval",
+    "sdf_grid",
+]

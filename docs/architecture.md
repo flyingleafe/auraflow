@@ -34,10 +34,33 @@ Differentiable aeroacoustics in JAX. Three simulation fidelities sharing one cor
         │  Griffin–Lim synthesis, harmonic extraction                │
         └────────────────────────────────────────────────────────────┘
 
+  auraflow.body      — general 3D bodies: triangle meshes, rigid+deforming motion,
+                       model import (STL/OBJ/PLY/GLB), mesh→FW-H sources, mesh→SDF
   auraflow.datasets  — JASA-style dataset generation (any backend)
   auraflow.viz       — in-browser 3D live visualization (websocket streaming)
   auraflow.run       — omnirun helpers / experiment entry points
 ```
+
+## Generalization principle (v2)
+
+The acoustic core is **not rotor-specific**. `fwh.f1a_pressure` consumes per-source
+histories `(y, v, a, L, Q_n)` on a uniform source-time grid — *anything* that produces
+panel histories radiates: rotor blades, a full airframe, a loudspeaker membrane, any
+imported 3D model moving through (or vibrating in) a compressible medium. The rotor
+backends (bemt/cona) are one adapter family; `auraflow.body` is the general one:
+
+```
+TriMesh (imported or parametric)
+   × Motion (rigid pose(t) ∘ optional surface deformation u_n(face, t))
+   × surface data (p(face,t) from CFD/prescribed; or nothing for thickness-only)
+   → panel source histories → auraflow.fwh → signals
+```
+
+A **speaker** is the degenerate-motion case: static rigid enclosure, membrane faces
+carrying a prescribed normal velocity signal u_n(t) (e.g. decoded from an audio file)
+→ thickness/monopole radiation; validated against the analytic baffled circular piston.
+A **flying body** is the opposite case: rigid motion, loading from surface pressure.
+Both compose (a vibrating surface on a moving body).
 
 ## Library conventions
 
@@ -78,6 +101,38 @@ Differentiable aeroacoustics in JAX. Three simulation fidelities sharing one cor
   rotation sense; `Vehicle`: multiple rotors + mass properties.
 - `airfoil.py` — polar protocols: `ThinAirfoilPolar` (Cl=2π(α−α0)/sqrt-beta corrections,
   Cd=cd0+k·Cl²), `TablePolar` (differentiable (α, M, Re) interpolation), stall softening.
+
+### auraflow.body
+- `mesh.py` — `TriMesh` (eqx): `vertices [V,3]` (traced, differentiable), `faces [F,3]`
+  (static int); derived per-face centroids/normals/areas; outward-winding invariant;
+  area-weighted single-point panel quadrature (document the compactness assumption:
+  panels ≪ wavelength; refine the mesh, not the quadrature). Parametric primitives
+  (`sphere`, `box`, `disk`, `cylinder`, `flat_plate`) for tests/validation gates.
+- `io.py` — `load_mesh(path)` via trimesh (optional `mesh` extra; lazy import): STL, OBJ,
+  PLY, GLB/GLTF, OFF. At import: merge duplicate vertices, repair winding, verify/report
+  watertightness, convert to float64 `TriMesh`. numpy allowed here (IO boundary).
+- `motion.py` — kinematics for anything:
+  - `RigidMotion` protocol: `pose(t) -> (R [3,3], x [3])`; velocities/accelerations via
+    `jax.jvp` (no finite differences). Implementations: `StaticPose`, `ConstantVelocity`,
+    `SpinMotion` (axis+Ω(t), subsumes rotor spin), `WaypointMotion` (smooth spline),
+    `ComposedMotion` (child frame in parent frame — blade in rotor in vehicle).
+  - `SurfaceVibration`: prescribed normal displacement/velocity per face,
+    `u_n(face_ids, t)` (traced) — the speaker membrane; superimposed on rigid motion.
+  - `panel_histories(mesh, motion, tau) -> (y, v, a, n, area) [F,T,…]` — the single
+    entry point every acoustic adapter uses.
+- `sources.py` — mesh → FW-H adapters:
+  - `impermeable_sources(mesh, motion, tau, p_surface=None, vibration=None)` →
+    `(y, v, a, L, Q_n)`: thickness `Q_n = ρ0 (v·n + u_n)` per panel; loading
+    `L = p·n·area` when surface pressure is given (from CFD or prescribed).
+  - `permeable_surface(mesh)` → generalizes `cfd.sphere.PermeableSphere` to any closed
+    mesh (points/normals/areas for CFD sampling + static-surface F1A fast path).
+- `sdf.py` — mesh → signed distance: `sdf_grid(mesh, box, cells)` (trimesh proximity at
+  setup, numpy OK) + differentiable trilinear `sdf_eval` — feeds JAX-Fluids level-set
+  solids (resolved bodies in CFD) and viz.
+- `speaker.py` — the speaker model on top of the above: `Speaker(enclosure: TriMesh,
+  membrane_faces, baffled: bool)`; `radiate(audio_signal u_n(t) or cone velocity, fs,
+  listeners) -> pressure [O,T]`; rigid-enclosure scattering neglected (documented;
+  correct in the baffled/free-field limits used by the gates).
 
 ### auraflow.fwh
 - `retarded.py` — vectorized Newton retarded-time solve g(τ)=τ+r/c0−t (fixed iters,
@@ -137,6 +192,12 @@ Differentiable aeroacoustics in JAX. Three simulation fidelities sharing one cor
 
 - Analytic gates: monopole/dipole (±flow) for every FW-H formulation; momentum-theory
   limits for BEMT (hover induced velocity, thrust); Wagner step response for unsteady aero.
+- Body/mesh gates (v2): pulsating sphere mesh (breathing u_n) vs exact monopole solution
+  p(r) = (ρ0 c0 U0 k a²/r)·e^{ik(r−a)}/√(1+(ka)²); rigid oscillating sphere vs analytic
+  dipole; baffled circular piston vs Rayleigh on-axis |p(z)| and far-field directivity
+  2J1(ka·sinθ)/(ka·sinθ); imported-vs-parametric mesh equivalence (same sphere STL vs
+  primitive → same radiated field); translating mesh Doppler; thin-plate mesh loading in
+  the compact limit vs a compact F1A dipole; SDF sign/values on primitives.
 - Cross-backend gates: BEMT+F1A vs CONA tonal path on the same rotor; CONA vs published
   validation numbers (DJI 9450 hover BPF directivity); CFD+FW-H vs CONA on JASA cases.
 - Gradient tests: finite-difference checks through each backend's scalar outputs.

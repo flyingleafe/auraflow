@@ -24,6 +24,15 @@ viz-live = [
 cfd = [
     "jaxfluids",
 ]
+# 3D-model import/export for `auraflow.body` (STL/OBJ/PLY/GLB/OFF). Lazy-imported
+# inside `auraflow.body.io`/`sdf`; base `import auraflow.body` works without it.
+mesh = [
+    "trimesh>=4",
+    # Spatial index used by trimesh.proximity.signed_distance (SDF grid setup).
+    "rtree>=1",
+    # Graph traversal used by trimesh.repair (winding/normal fixing on import).
+    "networkx>=3",
+]
 data = [
     "dload-ml>=0.3.0",
 ]
