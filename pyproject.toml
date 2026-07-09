@@ -38,8 +38,25 @@ data = [
 ]
 # GPU workers (omnirun colab/kaggle/slurm jobs): CUDA-enabled jax.
 # Never install locally -- the dev box is CPU-only.
+# The nvidia-* wheels are listed EXPLICITLY (mirroring jax-cuda12-plugin's
+# own with-cuda extra): relying on the transitive jax[cuda12] ->
+# jax-cuda12-plugin[with-cuda] extra chain left the math libs uninstalled
+# on kaggle workers (plugin present, libcusparse missing -> silent CPU
+# fallback). Explicit deps make the install unconditional.
 gpu = [
     "jax[cuda12]>=0.4.35",
+    "nvidia-cublas-cu12; sys_platform == 'linux'",
+    "nvidia-cuda-cupti-cu12; sys_platform == 'linux'",
+    "nvidia-cuda-nvcc-cu12; sys_platform == 'linux'",
+    "nvidia-cuda-nvrtc-cu12; sys_platform == 'linux'",
+    "nvidia-cuda-runtime-cu12; sys_platform == 'linux'",
+    "nvidia-cudnn-cu12; sys_platform == 'linux'",
+    "nvidia-cufft-cu12; sys_platform == 'linux'",
+    "nvidia-cusolver-cu12; sys_platform == 'linux'",
+    "nvidia-cusparse-cu12; sys_platform == 'linux'",
+    "nvidia-nccl-cu12; sys_platform == 'linux'",
+    "nvidia-nvjitlink-cu12; sys_platform == 'linux'",
+    "nvidia-nvshmem-cu12; sys_platform == 'linux'",
 ]
 
 [dependency-groups]
