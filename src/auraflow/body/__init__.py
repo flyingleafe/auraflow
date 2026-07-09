@@ -23,10 +23,13 @@ Public API
 - FW-H sources: :func:`permeable_surface`, :func:`impermeable_sources`,
   :func:`mesh_pressure` (the one-call mesh radiation path).
 - Loudspeaker: :class:`Speaker`, :func:`circular_piston`, :func:`select_faces`.
-- Signed distance: :func:`sdf_grid`, :func:`sdf_eval`.
+- Signed distance: :func:`sdf_grid` (GPU brute-force + winding number by
+  default), :func:`sdf_grid_jax`, :func:`winding_number`, :func:`cached_sdf_grid`
+  (disk-memoized), :func:`sdf_eval`.
 
 ``import auraflow.body`` works without trimesh installed; only
-:func:`load_mesh` / :func:`save_mesh` / :func:`sdf_grid` require the ``mesh`` extra.
+:func:`load_mesh` / :func:`save_mesh` / ``sdf_grid(method="trimesh")`` require
+the ``mesh`` extra (the default ``sdf_grid`` is pure JAX).
 """
 
 from auraflow.body.airfoil_profile import naca0012, naca4_profile
@@ -46,7 +49,13 @@ from auraflow.body.motion import (
     panel_histories,
     pose_derivatives,
 )
-from auraflow.body.sdf import sdf_eval, sdf_grid
+from auraflow.body.sdf import (
+    cached_sdf_grid,
+    sdf_eval,
+    sdf_grid,
+    sdf_grid_jax,
+    winding_number,
+)
 from auraflow.body.sources import impermeable_sources, mesh_pressure, permeable_surface
 from auraflow.body.speaker import Speaker, circular_piston, select_faces
 
@@ -63,6 +72,7 @@ __all__ = [
     "TriMesh",
     "WaypointMotion",
     "blade_mesh",
+    "cached_sdf_grid",
     "circular_piston",
     "impermeable_sources",
     "load_mesh",
@@ -77,5 +87,7 @@ __all__ = [
     "save_mesh",
     "sdf_eval",
     "sdf_grid",
+    "sdf_grid_jax",
     "select_faces",
+    "winding_number",
 ]

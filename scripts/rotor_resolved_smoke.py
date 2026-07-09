@@ -16,6 +16,14 @@ the same ``.npz`` so it can seed the hybrid CFD+FW-H flyover synthesis
 (``--steps 3000 --sample-every 5 --warmup 500`` -> T=500 samples on a
 subdiv-4 icosphere, S=5120 faces) this adds ~50-60 MB per file.
 
+The initial level-set is built via the GPU brute-force SDF / canonical-blade
+composition path (``body.blade.rotor_levelset_case`` default ``method="compose"``
+-> ``body.sdf.sdf_grid_jax`` + winding-number sign), which replaces the old
+single-threaded ``trimesh`` build (issue #2; ~seconds on GPU vs ~1h46m). The
+canonical single-blade SDF is disk-cached (``cached_sdf_grid``,
+``~/.cache/auraflow/sdf`` or ``$AURAFLOW_SDF_CACHE``), so a multi-RPM / multi-case
+sweep in one job rebuilds it only once.
+
 GPU-scale only (see repo CLAUDE.md): do NOT run locally beyond ``--dry``.
 Intended first runs (see docs/research/jaxfluids-evaluation.md for the cubic-
 cell requirement of the level-set model):

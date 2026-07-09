@@ -15,6 +15,11 @@ Two stages (see ``auraflow.cfd.flyover`` for the physics + approximations):
   ``results/cfd_flyover/V<speed>.npz`` plus per-mic WAVs (float32 Pa, and an
   int16 ``_norm`` set scaled by one shared factor for listening).
 
+Stage A's resolved-rotor case is built through ``rotor_levelset_case`` (default
+canonical-blade composition + GPU brute-force SDF with a winding-number sign,
+issue #2; the single-blade SDF is disk-cached in ``~/.cache/auraflow/sdf`` /
+``$AURAFLOW_SDF_CACHE``), so a run no longer pays the ~1h46m ``trimesh`` SDF build.
+
 Local proof: ``--smoke`` builds a tiny SYNTHETIC breathing-ellipsoid history (no
 jaxfluids) and runs the whole Stage-B synthesis end-to-end under the dev-box
 memory cap. Everything else (real CFD, 44.1 kHz x 1 s) is GPU/omnirun work.

@@ -136,9 +136,18 @@ Both compose (a vibrating surface on a moving body).
     `L = p·n·area` when surface pressure is given (from CFD or prescribed).
   - `permeable_surface(mesh)` → generalizes `cfd.sphere.PermeableSphere` to any closed
     mesh (points/normals/areas for CFD sampling + static-surface F1A fast path).
-- `sdf.py` — mesh → signed distance: `sdf_grid(mesh, box, cells)` (trimesh proximity at
-  setup, numpy OK) + differentiable trilinear `sdf_eval` — feeds JAX-Fluids level-set
-  solids (resolved bodies in CFD) and viz.
+- `sdf.py` — mesh → signed distance. Default `sdf_grid(mesh, box, cells)` is
+  `sdf_grid_jax`: a chunked, GPU-parallel **brute-force point→triangle distance** with a
+  **generalized-winding-number** sign (`winding_number`; robust for thin watertight blades),
+  pure JAX, seconds on a GPU — the fix for issue #2 (the old single-thread `trimesh.proximity`
+  path, kept as `method="trimesh"`, took ~1h46m at 192³×15k-faces). `cached_sdf_grid` memoizes
+  a grid on disk by a content hash (verts/faces/box/cells/method); differentiable trilinear
+  `sdf_eval` unchanged. Feeds JAX-Fluids level-set solids and viz.
+- `sdf_compose.py` — canonical-SDF composition (the RPM/azimuth **reuse** core of issue #2):
+  `CanonicalSDF` (one part's grid + safe far field) built **once** for a single blade, then
+  `rotor_sdf(blade_sdf, n_blades, azimuth, hub=…)` places it at every azimuth (union-`min`,
+  `compose_union`) plus an analytic `capped_cylinder_sdf` hub — one blade SDF serves every
+  blade count, RPM and initial azimuth.
 - `speaker.py` — the speaker model on top of the above: `Speaker(enclosure: TriMesh,
   membrane_faces, baffled: bool)`; `radiate(audio_signal u_n(t) or cone velocity, fs,
   listeners) -> pressure [O,T]`; rigid-enclosure scattering neglected (documented;
@@ -180,15 +189,21 @@ Both compose (a vibrating surface on a moving body).
 - Foundation: JAX-Fluids 0.2.1 (evaluated — `docs/research/jaxfluids-evaluation.md`).
 - `case.py` — programmatic case/numerical-setup builders: `acoustic_box_case` (sponge
   boundaries, optional pulse), `rotor_box_case` (actuator-disk `custom_forcing`;
-  `method="levelset_blades"` **(implemented)** → lofts the given `rotor`'s blades
-  (`body.blade.rotor_mesh`) and delegates to `body.blade.rotor_levelset_case` /
-  `body_case.levelset_body_case` — a resolved spinning-blade FLUID-SOLID case).
+  `method="levelset_blades"` **(implemented)** → delegates to `body.blade.rotor_levelset_case`
+  / `body_case.levelset_body_case` — a resolved spinning-blade FLUID-SOLID case. The initial
+  level-set is built by default via canonical-blade composition (`method="compose"`, one blade
+  SDF reused at every azimuth; `method="mesh"`/`"trimesh"` escape hatches build the full rotor
+  mesh SDF). `omega` may be a float, an `(times, omegas)` table, or a callable `Ω(t)` — a
+  **time-varying RPM within a run** (the level-set is RPM-independent, only `initial_azimuth`
+  enters it; the prescribed solid velocity carries `Ω(t)`)).
 - `sphere.py` — permeable Fibonacci sphere + differentiable trilinear `sample_primitives`.
 - `body_case.py` — general-body integration: `levelset_body_case(mesh, motion, box…)` builds
   a **FLUID-SOLID level-set** case (the body SDF is the level-set field, negative-inside per
-  JAX-Fluids; injected via `user_levelset_init`). Static solids and prescribed-moving solids
-  (`solid_coupling.dynamic="ONE-WAY"`, analytic rigid velocity field) are supported;
-  fluid-driven **two-way** rigid-body dynamics is **(deferred)**. `permeable_mesh_surface(mesh)`
+  JAX-Fluids; injected via `user_levelset_init`, or a precomputed `levelset_init` grid).
+  Static solids and prescribed-moving solids (`solid_coupling.dynamic="ONE-WAY"`) are supported,
+  including **time-varying rigid rotation** via `spin_solid_velocity(axis, center, omega)` where
+  `omega` is a constant or an `(times, omegas)` interp table (variable RPM); fluid-driven
+  **two-way** rigid-body dynamics is **(deferred)**. `permeable_mesh_surface(mesh)`
   generalizes the permeable sphere to any closed mesh (duck-types `PermeableSphere`).
 - `run.py` — manual integration-step driver: march, sample the permeable surface in memory,
   drive `auraflow.fwh.f1a_permeable_static`. Injects the body level-set for `LevelsetBodyCase`.

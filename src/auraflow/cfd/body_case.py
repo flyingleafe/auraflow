@@ -79,6 +79,7 @@ __all__ = [
     "PermeableMeshSurface",
     "levelset_body_case",
     "permeable_mesh_surface",
+    "spin_solid_velocity",
 ]
 
 
@@ -147,7 +148,7 @@ class LevelsetBodyCase(CFDCase):
     is_moving: bool = False
 
 
-def _cell_center_sdf(mesh: TriMesh, domain: BoxDomain) -> Array:
+def _cell_center_sdf(mesh: TriMesh, domain: BoxDomain, method: str = "jax") -> Array:
     """Body SDF sampled at the interior cell centres, shape ``[nx, ny, nz]``.
 
     The cell centres are ``linspace(lo + dx/2, hi - dx/2, n)`` per axis (matching
@@ -155,6 +156,8 @@ def _cell_center_sdf(mesh: TriMesh, domain: BoxDomain) -> Array:
     :func:`auraflow.body.sdf.sdf_grid` places its inclusive-endpoint node grid
     exactly on the cell centres. The result is negative inside the body -- the
     JAX-Fluids level-set field verbatim (no sign flip; see the module docstring).
+    ``method`` selects the SDF backend (default ``"jax"``: GPU brute-force +
+    winding number, no trimesh).
     """
     # Imported here (not at module top) to avoid an import cycle: auraflow.body.sdf
     # imports auraflow.cfd.sphere, which triggers auraflow.cfd (this package).
@@ -166,7 +169,53 @@ def _cell_center_sdf(mesh: TriMesh, domain: BoxDomain) -> Array:
     d = (hi - lo) / n
     cc_lo = lo + 0.5 * d
     cc_hi = hi - 0.5 * d
-    return sdf_grid(mesh, cc_lo, cc_hi, domain.cells)
+    return sdf_grid(mesh, cc_lo, cc_hi, domain.cells, method=method)
+
+
+def spin_solid_velocity(
+    axis: Vec3,
+    center: Vec3,
+    omega: float | tuple[Any, Any],
+) -> dict[str, str]:
+    """Prescribed rigid-rotation solid-velocity lambdas ``(x, y, z, t) -> (u, v, w)``.
+
+    A rigid spin about the unit ``axis`` line through ``center`` has world
+    velocity ``v(X, t) = Omega(t) * (axis x (X - center))``. This returns the
+    JAX-Fluids ``solid_properties.velocity`` dict of stringified ``jnp`` lambdas
+    for either a **constant** rate (``omega`` a float) or a **time-varying** rate
+    (``omega`` a ``(times, omegas)`` table, embedded as a ``jnp.interp`` closure
+    -- constant-extrapolated outside the table, matching
+    :func:`auraflow.core.frames.integrate_azimuth`). Components are embedded as
+    plain Python floats (JAX-Fluids evals the strings with only ``jnp`` in scope,
+    so a numpy scalar would leak ``np.float64(...)``).
+
+    Args:
+        axis: Rotation axis (normalized internally), shape ``[3]``.
+        center: A point on the axis [m], shape ``[3]``.
+        omega: Constant signed rate [rad/s] (float), or a ``(times, omegas)``
+            table of signed rates [rad/s] for a time-varying spin.
+
+    Returns:
+        ``{"u", "v", "w"}`` of ``(x, y, z, t)`` jnp-lambda strings.
+    """
+    a = np.asarray(axis, dtype=float).ravel()
+    a = a / np.linalg.norm(a)
+    a0, a1, a2 = (float(a[0]), float(a[1]), float(a[2]))
+    c = np.asarray(center, dtype=float).ravel()
+    c0, c1, c2 = (float(c[0]), float(c[1]), float(c[2]))
+    if isinstance(omega, tuple):
+        times, omegas = omega
+        t_arr = ", ".join(repr(float(x)) for x in np.asarray(times).ravel())
+        w_arr = ", ".join(repr(float(x)) for x in np.asarray(omegas).ravel())
+        we = f"jnp.interp(t, jnp.array([{t_arr}]), jnp.array([{w_arr}]))"
+    else:
+        we = repr(float(omega))
+    # v = Omega(t) * (axis x (X - center)); factor Omega(t) out of each component.
+    return {
+        "u": f"lambda x, y, z, t: ({we}) * ({a1!r} * (z - {c2!r}) - {a2!r} * (y - {c1!r}))",
+        "v": f"lambda x, y, z, t: ({we}) * ({a2!r} * (x - {c0!r}) - {a0!r} * (z - {c2!r}))",
+        "w": f"lambda x, y, z, t: ({we}) * ({a0!r} * (y - {c1!r}) - {a1!r} * (x - {c0!r}))",
+    }
 
 
 def _solid_velocity_field(
@@ -210,20 +259,10 @@ def _solid_velocity_field(
                 "prescribed level-set solid velocity. Use SpinMotion.constant, or "
                 "pass an explicit solid_velocity={'u','v','w'} override."
             )
-        axis = np.asarray(motion.axis, dtype=float).ravel()
-        axis = axis / np.linalg.norm(axis)
-        # Plain Python floats: the components are embedded into the lambda
-        # strings via repr, and JAX-Fluids evals them with only ``jnp`` in scope,
-        # so a numpy scalar would leak "np.float64(...)" (undefined there).
-        wv = float(np.asarray(motion.omega)) * axis  # angular velocity vector
-        w = [float(x) for x in wv]
-        c = [float(x) for x in np.asarray(motion.center, dtype=float).ravel()]
-        # Rigid rotation: v(X) = w x (X - center) (steady field for constant rate).
-        return {
-            "u": f"lambda x, y, z, t: {w[1]!r} * (z - {c[2]!r}) - {w[2]!r} * (y - {c[1]!r})",
-            "v": f"lambda x, y, z, t: {w[2]!r} * (x - {c[0]!r}) - {w[0]!r} * (z - {c[2]!r})",
-            "w": f"lambda x, y, z, t: {w[0]!r} * (y - {c[1]!r}) - {w[1]!r} * (x - {c[0]!r})",
-        }
+        # Rigid rotation: v(X) = Omega * (axis x (X - center)) (steady field for
+        # a constant rate). Built by spin_solid_velocity (which also handles the
+        # time-varying-rate table used by the variable-RPM rotor cases).
+        return spin_solid_velocity(motion.axis, motion.center, float(np.asarray(motion.omega)))
     raise NotImplementedError(
         f"levelset_body_case does not support prescribed motion of type "
         f"{type(motion).__name__} in JAX-Fluids v0.2.1. Supported analytic motions: "
@@ -234,7 +273,7 @@ def _solid_velocity_field(
 
 
 def levelset_body_case(
-    mesh: TriMesh,
+    mesh: TriMesh | None,
     motion: Motion | None = None,
     *,
     box_lo: Vec3,
@@ -247,6 +286,8 @@ def levelset_body_case(
     sponge_thickness: float | None = None,
     sponge_sigma: float = 0.5,
     solid_velocity: dict[str, Any] | None = None,
+    levelset_init: Array | None = None,
+    sdf_method: str = "jax",
     is_double: bool = False,
     case_name: str = "levelset_body",
 ) -> LevelsetBodyCase:
@@ -274,6 +315,8 @@ def levelset_body_case(
 
     Args:
         mesh: The immersed body :class:`~auraflow.body.mesh.TriMesh` (closed).
+            May be ``None`` **only** when ``levelset_init`` is supplied directly
+            (e.g. a composed rotor SDF from :mod:`auraflow.body.sdf_compose`).
         motion: The body :class:`~auraflow.body.motion.Motion` (default: static).
         box_lo: Lower box corner [m], shape ``[3]``.
         box_hi: Upper box corner [m], shape ``[3]``.
@@ -289,6 +332,12 @@ def levelset_body_case(
         solid_velocity: Explicit prescribed solid-velocity override, a dict
             ``{"u", "v", "w"}`` of floats or ``(x, y, z, t)`` jnp-lambda strings;
             forces the moving path for any motion.
+        levelset_init: Precomputed initial level-set grid [m], shape
+            ``[nx, ny, nz]`` at the interior cell centres (negative inside). When
+            given it is used verbatim and no mesh SDF is built (``mesh`` may be
+            ``None``); used by the composed-rotor path.
+        sdf_method: SDF backend for building the level-set from ``mesh`` when
+            ``levelset_init`` is not given (``"jax"`` default, or ``"trimesh"``).
         is_double: Use float64 compute (default float32; FW-H upcasts).
         case_name: JAX-Fluids case name.
 
@@ -301,6 +350,8 @@ def levelset_body_case(
         NotImplementedError: for an unsupported moving motion (see above).
     """
     medium = Medium() if medium is None else medium
+    if mesh is None and levelset_init is None:
+        raise ValueError("levelset_body_case needs a mesh, or an explicit levelset_init grid")
     lo = np.asarray(box_lo, dtype=float).ravel()
     hi = np.asarray(box_hi, dtype=float).ravel()
     if any(c <= 1 for c in cells):
@@ -368,7 +419,9 @@ def levelset_body_case(
         levelset_block["solid_coupling"] = {"dynamic": "ONE-WAY"}
     numerical["levelset"] = levelset_block
 
-    levelset_init = _cell_center_sdf(mesh, domain)
+    if levelset_init is None:
+        assert mesh is not None  # guarded above
+        levelset_init = _cell_center_sdf(mesh, domain, method=sdf_method)
     return LevelsetBodyCase(
         case=case,
         numerical_setup=numerical,

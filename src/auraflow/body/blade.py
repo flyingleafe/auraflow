@@ -241,9 +241,128 @@ def rotor_mesh(
     return TriMesh.merge(parts)
 
 
+def _resolve_omega(omega: Any, omega_times: Any) -> tuple[float | tuple[Any, Any], float]:
+    """Normalize an ``omega`` spec to (case-omega, peak |Omega|).
+
+    Returns either a float (constant rate) or a ``(times, omegas)`` table, plus
+    the peak absolute rate used for the tip-Mach timestep bound. A callable is
+    sampled onto ``omega_times`` (required for the callable form) to build the
+    table; a table is passed through; a scalar stays constant.
+    """
+    if callable(omega):
+        if omega_times is None:
+            raise ValueError(
+                "A callable omega(t) needs omega_times=<time grid [s]> so it can be "
+                "tabulated into the (differentiable) prescribed solid velocity."
+            )
+        times = np.asarray(omega_times, dtype=float).ravel()
+        omega_fn: Any = omega  # Any (callable() would narrow the return to object)
+        omegas = np.asarray([float(omega_fn(t)) for t in times.tolist()], dtype=float)
+        return (times, omegas), float(np.max(np.abs(omegas)))
+    if isinstance(omega, tuple):
+        times, omegas = omega
+        omegas = np.asarray(omegas, dtype=float).ravel()
+        return (np.asarray(times, dtype=float).ravel(), omegas), float(np.max(np.abs(omegas)))
+    return float(omega), abs(float(omega))
+
+
+def _cell_center_points(box_lo: Any, box_hi: Any, cells: tuple[int, int, int]) -> Array:
+    """Interior cell-centre coordinates as an ``[nx*ny*nz, 3]`` point cloud.
+
+    Matches :func:`auraflow.cfd.body_case._cell_center_sdf`: centres are
+    ``linspace(lo + d/2, hi - d/2, n)`` per axis (``ij`` meshgrid order).
+    """
+    lo = np.asarray(box_lo, dtype=float).ravel()
+    hi = np.asarray(box_hi, dtype=float).ravel()
+    n = np.asarray(cells)
+    d = (hi - lo) / n
+    cc_lo = lo + 0.5 * d
+    cc_hi = hi - 0.5 * d
+    xs = np.linspace(cc_lo[0], cc_hi[0], n[0])
+    ys = np.linspace(cc_lo[1], cc_hi[1], n[1])
+    zs = np.linspace(cc_lo[2], cc_hi[2], n[2])
+    gx, gy, gz = np.meshgrid(xs, ys, zs, indexing="ij")
+    return jnp.asarray(np.stack([gx.ravel(), gy.ravel(), gz.ravel()], axis=-1))
+
+
+def _compose_rotor_levelset(
+    rotor: Rotor,
+    *,
+    box_lo: Any,
+    box_hi: Any,
+    cells: tuple[int, int, int],
+    axis: Any,
+    center: Any,
+    hub: bool | dict[str, Any],
+    profile: ProfileFn,
+    n_chord: int,
+    initial_azimuth: float,
+    blade_cells: int | tuple[int, int, int] | None,
+    blade_padding: float | None,
+    cache: bool,
+    cache_dir: str | None,
+    batch_points: int,
+) -> Array:
+    """Build the initial level-set grid by composing ONE canonical blade SDF.
+
+    Lofts a single blade, builds its :class:`~auraflow.body.sdf_compose.CanonicalSDF`
+    in a tight box (disk-cached), then evaluates the whole-rotor SDF
+    (:func:`~auraflow.body.sdf_compose.rotor_sdf`: the one blade at every azimuth
+    plus an analytic hub cylinder) at the CFD cell centres. The blade grid is
+    sized so its spacing matches the CFD spacing.
+    """
+    from auraflow.body.sdf_compose import CanonicalSDF, rotor_sdf
+
+    lo = np.asarray(box_lo, dtype=float).ravel()
+    hi = np.asarray(box_hi, dtype=float).ravel()
+    dx = float(np.min((hi - lo) / np.asarray(cells)))
+    pad = 4.0 * dx if blade_padding is None else float(blade_padding)
+
+    blade = blade_mesh(rotor.blade, profile=profile, n_chord=n_chord)
+    if blade_cells is None:
+        verts = np.asarray(blade.vertices)
+        extent = (verts.max(axis=0) - verts.min(axis=0)) + 2.0 * pad
+        e = [int(np.clip(np.ceil(v / dx), 8, 160)) for v in extent]
+        bcells: tuple[int, int, int] = (e[0], e[1], e[2])
+    elif isinstance(blade_cells, int):
+        bcells = (blade_cells, blade_cells, blade_cells)
+    else:
+        bc = tuple(blade_cells)
+        bcells = (bc[0], bc[1], bc[2])
+
+    blade_sdf = CanonicalSDF.from_mesh(
+        blade,
+        padding=pad,
+        cells=bcells,
+        cache=cache,
+        cache_dir=cache_dir,
+        batch_points=batch_points,
+    )
+
+    hub_params: dict[str, Any] | None = None
+    if hub:
+        params = {} if hub is True else dict(hub)
+        r_hub = float(jnp.asarray(rotor.blade.hub_radius))
+        radius = float(params.get("radius", r_hub))
+        height = float(params.get("height", 0.5 * r_hub))
+        hub_params = {"radius": radius, "half_height": 0.5 * height}
+
+    sdf_fn = rotor_sdf(
+        blade_sdf,
+        n_blades=rotor.n_blades,
+        azimuth=initial_azimuth,
+        axis=axis,
+        center=center,
+        spin_direction=rotor.spin_direction,
+        hub=hub_params,
+    )
+    pts = _cell_center_points(box_lo, box_hi, cells)
+    return sdf_fn(pts).reshape(cells)
+
+
 def rotor_levelset_case(
     rotor_or_mesh: Rotor | TriMesh,
-    omega: float,
+    omega: Any,
     *,
     box_lo: Any,
     box_hi: Any,
@@ -255,33 +374,75 @@ def rotor_levelset_case(
     profile: ProfileFn = _default_profile,
     n_chord: int = 60,
     mach_max: float | None = None,
+    method: str = "compose",
+    initial_azimuth: float = 0.0,
+    omega_times: Any = None,
+    blade_cells: int | tuple[int, int, int] | None = None,
+    blade_padding: float | None = None,
+    sdf_cache: bool = True,
+    sdf_cache_dir: str | None = None,
+    sdf_batch_points: int = 4096,
     **case_kwargs: Any,
 ) -> Any:
     """Resolved spinning-blade FLUID-SOLID level-set CFD case for a rotor.
 
-    Builds (or accepts) a rotor :class:`~auraflow.body.mesh.TriMesh` and immerses
-    it in a JAX-Fluids level-set box as a **prescribed constant-rate spinning
-    solid**: :func:`auraflow.cfd.body_case.levelset_body_case` with a
-    :func:`auraflow.body.motion.SpinMotion.constant` about ``axis`` through
-    ``center`` at rate ``omega``. This is the real backing for
-    :func:`auraflow.cfd.case.rotor_box_case` ``method="levelset_blades"``.
+    Immerses a rotor in a JAX-Fluids level-set box as a **prescribed spinning
+    solid** and returns a :func:`auraflow.cfd.body_case.levelset_body_case`. This
+    is the real backing for :func:`auraflow.cfd.case.rotor_box_case`
+    ``method="levelset_blades"``.
+
+    **Initial level-set (``method``)**:
+
+    - ``"compose"`` (default, the RPM/azimuth-reuse core of issue #2): build the
+      SDF of ONE blade once (a small, cheap grid in the blade's own tight box,
+      disk-cached), then assemble the whole-rotor level-set by evaluating that
+      single canonical blade at every azimuth (plus an analytic hub cylinder) on
+      the CFD cell centres -- fast trilinear lookups, **no per-configuration mesh
+      SDF build**. So one blade SDF serves every blade count, every RPM and every
+      ``initial_azimuth``. Requires a :class:`~auraflow.core.blade.Rotor`.
+    - ``"mesh"``: loft the full rotor mesh and build its SDF directly with the
+      GPU brute-force kernel (:func:`auraflow.body.sdf.sdf_grid_jax`) -- the
+      escape hatch / cross-validation path. Works for a ready ``TriMesh`` too.
+    - ``"trimesh"``: as ``"mesh"`` but via the legacy exact ``trimesh`` SDF.
+
+    **RPM (``omega``)**: the initial level-set is **independent of RPM** (only
+    ``initial_azimuth`` enters it); JAX-Fluids advects it thereafter with the
+    prescribed solid velocity ``v = Omega(t) * (axis x (X - center))``. ``omega``
+    may be:
+
+    - a float -> constant rate (a :func:`auraflow.body.motion.SpinMotion.constant`);
+    - a ``(times, omegas)`` table -> a time-varying rate advected via a
+      ``jnp.interp`` closure (differentiable, constant-extrapolated);
+    - a callable ``Omega(t)`` -> sampled onto ``omega_times`` into such a table.
 
     Args:
-        rotor_or_mesh: A :class:`~auraflow.core.blade.Rotor` (lofted here via
-            :func:`rotor_mesh`) or a ready rotor :class:`TriMesh` (rotor frame).
-        omega: Constant rotor angular rate [rad/s] (signed, right-handed about
-            ``axis``).
+        rotor_or_mesh: A :class:`~auraflow.core.blade.Rotor` (required for
+            ``method="compose"``; lofted here otherwise) or a ready rotor
+            :class:`TriMesh` (rotor frame; forces a mesh SDF path).
+        omega: Rotor angular rate [rad/s]: ``float`` | ``(times, omegas)`` table
+            | callable ``Omega(t)`` (see above). Signed, right-handed about ``axis``.
         box_lo: Lower box corner [m], shape ``[3]``.
         box_hi: Upper box corner [m], shape ``[3]``.
         cells: ``(nx, ny, nz)`` cell counts (all ``> 1``).
         axis: Rotor thrust/rotation axis [m], shape ``[3]`` (default ``+z``).
         center: A point on the rotation axis (the hub) [m], shape ``[3]``.
         medium: Ambient :class:`~auraflow.core.medium.Medium` (default ISA).
-        hub: Hub option forwarded to :func:`rotor_mesh` (ignored if a mesh is
-            passed).
-        profile, n_chord: Forwarded to :func:`rotor_mesh` (ignored for a mesh).
+        hub: Hub option (``True``/dict). For ``"compose"`` an analytic capped
+            cylinder (radius = root cutout, height = ``0.5 *`` root cutout by
+            default); for ``"mesh"`` forwarded to :func:`rotor_mesh`.
+        profile, n_chord: Blade lofting options (see :func:`rotor_mesh`).
         mach_max: Peak surface Mach bounding the timestep; default is the tip
-            Mach ``|omega| * R / c0`` from the rotor/mesh extent.
+            Mach ``max|Omega| * R / c0``.
+        method: Initial-level-set build method (see above).
+        initial_azimuth: Reference-blade azimuth [rad] of the *initial* level-set.
+        omega_times: Time grid [s] to tabulate a callable ``omega`` (required
+            only for the callable form).
+        blade_cells: Canonical-blade SDF grid size (``"compose"`` only; default
+            sized to the CFD spacing).
+        blade_padding: Canonical-blade box padding [m] (``"compose"`` only;
+            default ``4 *`` CFD spacing).
+        sdf_cache, sdf_cache_dir, sdf_batch_points: Canonical-blade SDF disk-cache
+            + memory knobs (``"compose"`` only).
         **case_kwargs: Extra keyword args for
             :func:`auraflow.cfd.body_case.levelset_body_case` (e.g. ``cfl``,
             ``end_time``, ``sponge_thickness``, ``is_double``, ``case_name``).
@@ -292,23 +453,73 @@ def rotor_levelset_case(
     """
     # Imported here (not at module top) to avoid an import cycle: cfd.body_case
     # -> cfd.case -> (lazily) body.blade.
-    from auraflow.cfd.body_case import levelset_body_case
+    from auraflow.cfd.body_case import levelset_body_case, spin_solid_velocity
     from auraflow.core.medium import Medium
 
-    if isinstance(rotor_or_mesh, Rotor):
-        mesh = rotor_mesh(rotor_or_mesh, hub=hub, profile=profile, n_chord=n_chord)
-        tip_r = float(jnp.asarray(rotor_or_mesh.blade.radius))
+    medium = Medium() if medium is None else medium
+    omega_spec, peak_omega = _resolve_omega(omega, omega_times)
+
+    is_rotor = isinstance(rotor_or_mesh, Rotor)
+    if is_rotor:
+        rotor = rotor_or_mesh
+        tip_r = float(jnp.asarray(rotor.blade.radius))
     else:
-        mesh = rotor_or_mesh
-        # Rotor frame: radius ~ max in-plane (xy) distance from the axis.
-        xy = np.asarray(mesh.vertices)[:, :2]
+        rotor = None
+        if method == "compose":
+            method = "mesh"  # a raw mesh cannot be decomposed into one blade
+        xy = np.asarray(rotor_or_mesh.vertices)[:, :2]
         tip_r = float(np.max(np.linalg.norm(xy, axis=-1)))
 
-    medium = Medium() if medium is None else medium
     if mach_max is None:
-        mach_max = abs(float(omega)) * tip_r / float(medium.c0)
+        mach_max = peak_omega * tip_r / float(medium.c0)
 
-    motion = SpinMotion.constant(axis=axis, omega=omega, center=center)
+    # Initial level-set field + the mesh handed to levelset_body_case.
+    mesh: TriMesh | None
+    levelset_init: Array | None
+    sdf_method = "jax"
+    if method == "compose":
+        assert rotor is not None
+        levelset_init = _compose_rotor_levelset(
+            rotor,
+            box_lo=box_lo,
+            box_hi=box_hi,
+            cells=cells,
+            axis=axis,
+            center=center,
+            hub=hub,
+            profile=profile,
+            n_chord=n_chord,
+            initial_azimuth=initial_azimuth,
+            blade_cells=blade_cells,
+            blade_padding=blade_padding,
+            cache=sdf_cache,
+            cache_dir=sdf_cache_dir,
+            batch_points=sdf_batch_points,
+        )
+        mesh = None
+    elif method in ("mesh", "trimesh"):
+        mesh = (
+            rotor_mesh(rotor_or_mesh, hub=hub, profile=profile, n_chord=n_chord)
+            if isinstance(rotor_or_mesh, Rotor)
+            else rotor_or_mesh
+        )
+        levelset_init = None
+        sdf_method = "jax" if method == "mesh" else "trimesh"
+    else:
+        raise ValueError(
+            f"rotor_levelset_case method must be 'compose'/'mesh'/'trimesh', got {method!r}"
+        )
+
+    # Prescribed solid velocity: constant rate -> SpinMotion path; time-varying
+    # rate -> an explicit interp-closure override (the RPM is not baked into the
+    # level-set, only advection).
+    if isinstance(omega_spec, tuple):
+        motion = None
+        solid_velocity = spin_solid_velocity(axis, center, omega_spec)
+    else:
+        motion = SpinMotion.constant(axis=axis, omega=omega_spec, center=center)
+        solid_velocity = None
+
     return levelset_body_case(
         mesh,
         motion,
@@ -317,5 +528,8 @@ def rotor_levelset_case(
         cells=cells,
         medium=medium,
         mach_max=mach_max,
+        solid_velocity=solid_velocity,
+        levelset_init=levelset_init,
+        sdf_method=sdf_method,
         **case_kwargs,
     )
