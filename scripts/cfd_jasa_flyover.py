@@ -153,6 +153,7 @@ def _load_surface(path: str) -> tuple[dict, dict, float]:
 def _run_cfd(args: argparse.Namespace) -> tuple[dict, dict, float]:
     """Run the resolved-rotor CFD inline (Stage A) -> (geom, raw history, omega)."""
     import importlib.util
+    import sys
 
     import numpy as np
 
@@ -165,6 +166,10 @@ def _run_cfd(args: argparse.Namespace) -> tuple[dict, dict, float]:
     )
     assert spec is not None and spec.loader is not None
     rrs = importlib.util.module_from_spec(spec)
+    # Register BEFORE exec: @dataclass resolves cls.__module__ through
+    # sys.modules during class creation and hard-crashes on an unregistered
+    # module ("'NoneType' object has no attribute '__dict__'").
+    sys.modules[spec.name] = rrs
     spec.loader.exec_module(rrs)
     build_resolved_case = rrs.build_resolved_case
     run_resolved_surface = rrs.run_resolved_surface
