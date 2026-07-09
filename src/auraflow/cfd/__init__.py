@@ -49,6 +49,11 @@ from auraflow.cfd.case import (
     resolution_for_frequency,
     rotor_box_case,
 )
+from auraflow.cfd.flyover import (
+    quadrotor_surface_flyover,
+    synthesize_flyover_wavs,
+    tile_surface_history,
+)
 from auraflow.cfd.run import (
     SurfaceHistory,
     propagate_to_observers,
@@ -75,9 +80,12 @@ __all__ = [
     "permeable_mesh_surface",
     "points_per_wavelength",
     "propagate_to_observers",
+    "quadrotor_surface_flyover",
     "resolution_for_frequency",
     "rotor_box_case",
     "run_acoustic_case",
     "sample_primitives",
+    "synthesize_flyover_wavs",
+    "tile_surface_history",
     "trilinear_interpolate",
 ]
