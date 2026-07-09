@@ -41,6 +41,7 @@ All lengths [m], angles [rad] internally (degrees only in the named constants).
 from __future__ import annotations
 
 import math
+from typing import TYPE_CHECKING
 
 import jax.numpy as jnp
 
@@ -49,6 +50,9 @@ from auraflow.cona.flight import Multirotor
 from auraflow.core.airfoil import ThinAirfoilPolar
 from auraflow.core.blade import BladeGeometry, Rotor, Vehicle
 from auraflow.core.medium import Medium
+
+if TYPE_CHECKING:
+    from auraflow.body.mesh import TriMesh
 
 __all__ = [
     "BPF_HZ",
@@ -64,9 +68,11 @@ __all__ = [
     "TAPER",
     "TIP_SPEED",
     "nasa_1pax_blade",
+    "nasa_1pax_blade_mesh",
     "nasa_1pax_hover_collective",
     "nasa_1pax_multirotor",
     "nasa_1pax_polar",
+    "nasa_1pax_rotor_mesh",
     "nasa_1pax_vehicle",
     "trim_hover_collective",
 ]
@@ -139,6 +145,51 @@ def nasa_1pax_blade(n_stations: int = 16) -> BladeGeometry:
         twist_root=0.0,
         twist_tip=math.radians(LINEAR_TWIST_DEG),
     )
+
+
+def nasa_1pax_blade_mesh(n_span: int = 16, n_chord: int = 60) -> TriMesh:
+    """Watertight NACA-0012 blade :class:`TriMesh` for the reconstructed 1-Pax blade.
+
+    Lofts :func:`nasa_1pax_blade` (the single source of truth for the blade
+    chord/twist) with :func:`auraflow.body.blade.blade_mesh` and a symmetric
+    NACA 0012 section. Built in the blade section frame (x spanwise, y chordwise
+    toward the leading edge, z thrust-normal; quarter chord on the spanwise axis).
+
+    Args:
+        n_span: Number of radial stations ``S`` (static int) -- also the lofted
+            span discretization.
+        n_chord: Chordwise samples per surface for the section (static int).
+
+    Returns:
+        A watertight, outward-wound blade :class:`~auraflow.body.mesh.TriMesh`.
+    """
+    from auraflow.body.blade import blade_mesh
+
+    return blade_mesh(nasa_1pax_blade(n_span), n_chord=n_chord)
+
+
+def nasa_1pax_rotor_mesh(
+    n_span: int = 16, n_chord: int = 60, hub: bool | dict[str, float] = False
+) -> TriMesh:
+    """Three-blade rotor :class:`TriMesh` for the 1-Pax rotor (rotor frame).
+
+    Places ``N_BLADES`` copies of :func:`nasa_1pax_blade_mesh` at their equal
+    azimuths via :func:`auraflow.body.blade.rotor_mesh` (thrust axis ``+z``,
+    ``spin_direction = +1``), optionally with a hub cylinder. Geometry is read
+    from :func:`nasa_1pax_blade` -- no duplicated constants.
+
+    Args:
+        n_span: Radial stations per blade (static int).
+        n_chord: Chordwise samples per surface (static int).
+        hub: Hub option forwarded to :func:`auraflow.body.blade.rotor_mesh`.
+
+    Returns:
+        A rotor :class:`~auraflow.body.mesh.TriMesh` in the rotor frame.
+    """
+    from auraflow.body.blade import rotor_mesh
+
+    rotor = Rotor(blade=nasa_1pax_blade(n_span), n_blades=N_BLADES)
+    return rotor_mesh(rotor, hub=hub, n_chord=n_chord)
 
 
 def nasa_1pax_polar() -> ThinAirfoilPolar:

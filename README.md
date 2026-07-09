@@ -69,6 +69,12 @@ surf = permeable_mesh_surface(TriMesh.sphere(0.4, subdivisions=3))   # sample on
 hist = run_acoustic_case(case, surf, n_steps=200)                    # GPU for real resolutions
 ```
 
+**Rotor blades → mesh**: loft a `core.blade.BladeGeometry`/`Rotor` into a
+watertight `TriMesh` (`body.blade.blade_mesh` / `rotor_mesh`) for mesh-based rotor
+acoustics or a resolved spinning-blade level-set CFD case
+(`body.blade.rotor_levelset_case`, also `cfd.rotor_box_case(method="levelset_blades",
+rotor=…)`); cubic CFD cells required by JAX-Fluids' level-set model.
+
 Runnable demos (tiny, CPU-safe): `scripts/speaker_demo.py` and
 `scripts/body_flyby_demo.py` (both take `--viz` for the live mesh stream).
 

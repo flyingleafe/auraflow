@@ -212,8 +212,12 @@ def _solid_velocity_field(
             )
         axis = np.asarray(motion.axis, dtype=float).ravel()
         axis = axis / np.linalg.norm(axis)
-        w = float(np.asarray(motion.omega)) * axis  # angular velocity vector
-        c = np.asarray(motion.center, dtype=float).ravel()
+        # Plain Python floats: the components are embedded into the lambda
+        # strings via repr, and JAX-Fluids evals them with only ``jnp`` in scope,
+        # so a numpy scalar would leak "np.float64(...)" (undefined there).
+        wv = float(np.asarray(motion.omega)) * axis  # angular velocity vector
+        w = [float(x) for x in wv]
+        c = [float(x) for x in np.asarray(motion.center, dtype=float).ravel()]
         # Rigid rotation: v(X) = w x (X - center) (steady field for constant rate).
         return {
             "u": f"lambda x, y, z, t: {w[1]!r} * (z - {c[2]!r}) - {w[2]!r} * (y - {c[1]!r})",

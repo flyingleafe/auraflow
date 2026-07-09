@@ -107,7 +107,17 @@ Both compose (a vibrating surface on a moving body).
   (static int); derived per-face centroids/normals/areas; outward-winding invariant;
   area-weighted single-point panel quadrature (document the compactness assumption:
   panels ≪ wavelength; refine the mesh, not the quadrature). Parametric primitives
-  (`sphere`, `box`, `disk`, `cylinder`, `flat_plate`) for tests/validation gates.
+  (`sphere`, `box`, `disk`, `cylinder`, `flat_plate`) for tests/validation gates;
+  `merge([...])` concatenates components (vertices stacked, faces offset).
+- `airfoil_profile.py` — 2D section profiles for lofting: `naca4_profile(m, p, tc,
+  n_points)` (closed, blunt-closed-TE NACA 4-digit loop, CCW in `(xi, eta)`,
+  differentiable in `(m, p, tc)`); `naca0012` convenience partial.
+- `blade.py` — rotor↔body bridge: `blade_mesh(BladeGeometry, profile, n_chord)` lofts
+  a watertight, outward-wound blade `TriMesh` in the blade-section frame with the
+  quarter-chord on the spanwise axis (matches `quarter_chord_points`; twist = pitch
+  about the span axis); `rotor_mesh(Rotor, hub=…)` places blades at their azimuths
+  (+ optional hub) via `TriMesh.merge`; `rotor_levelset_case(rotor_or_mesh, omega, …)`
+  wraps a constant `SpinMotion` into `cfd.body_case.levelset_body_case`.
 - `io.py` — `load_mesh(path)` via trimesh (optional `mesh` extra; lazy import): STL, OBJ,
   PLY, GLB/GLTF, OFF. At import: merge duplicate vertices, repair winding, verify/report
   watertightness, convert to float64 `TriMesh`. numpy allowed here (IO boundary).
@@ -170,8 +180,9 @@ Both compose (a vibrating surface on a moving body).
 - Foundation: JAX-Fluids 0.2.1 (evaluated — `docs/research/jaxfluids-evaluation.md`).
 - `case.py` — programmatic case/numerical-setup builders: `acoustic_box_case` (sponge
   boundaries, optional pulse), `rotor_box_case` (actuator-disk `custom_forcing`;
-  `method="levelset_blades"` **(deferred)** → points at `body_case.levelset_body_case`,
-  blocked only on generating blade `TriMesh`es from `core.blade.BladeGeometry`).
+  `method="levelset_blades"` **(implemented)** → lofts the given `rotor`'s blades
+  (`body.blade.rotor_mesh`) and delegates to `body.blade.rotor_levelset_case` /
+  `body_case.levelset_body_case` — a resolved spinning-blade FLUID-SOLID case).
 - `sphere.py` — permeable Fibonacci sphere + differentiable trilinear `sample_primitives`.
 - `body_case.py` — general-body integration: `levelset_body_case(mesh, motion, box…)` builds
   a **FLUID-SOLID level-set** case (the body SDF is the level-set field, negative-inside per

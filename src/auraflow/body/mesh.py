@@ -128,6 +128,38 @@ class TriMesh(eqx.Module):
         """Triangle connectivity as an integer array, shape ``[F, 3]``."""
         return jnp.asarray(self.faces, dtype=jnp.int64)
 
+    @classmethod
+    def merge(cls, meshes: Sequence["TriMesh"]) -> "TriMesh":
+        """Concatenate several meshes into one (vertices stacked, faces offset).
+
+        The vertex arrays are concatenated in order and each mesh's face indices
+        are shifted by the running vertex offset, so the components keep their
+        geometry and winding. The result is a single :class:`TriMesh` with
+        (possibly) several disconnected closed components -- e.g. the blades of a
+        rotor plus a hub. :meth:`volume` is additive over the components, so a
+        merge of watertight parts has volume equal to the sum of their volumes.
+
+        Args:
+            meshes: The meshes to merge (at least one). Vertices stay traced and
+                differentiable; faces are static.
+
+        Returns:
+            The merged :class:`TriMesh`. It is flagged watertight iff **every**
+            input component is watertight (each edge still shared by exactly two
+            faces within its component).
+        """
+        meshes = list(meshes)
+        if not meshes:
+            raise ValueError("merge needs at least one mesh")
+        verts = jnp.concatenate([m.vertices for m in meshes], axis=0)
+        faces: list[tuple[int, ...]] = []
+        offset = 0
+        for m in meshes:
+            faces.extend(tuple(i + offset for i in tri) for tri in m.faces)
+            offset += m.n_vertices
+        watertight = all(m.is_watertight for m in meshes)
+        return cls(verts, np.asarray(faces, dtype=np.int64), is_watertight=watertight)
+
     @property
     def n_faces(self) -> int:
         """Number of triangular faces ``F`` (static int)."""

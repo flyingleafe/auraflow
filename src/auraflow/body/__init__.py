@@ -29,6 +29,8 @@ Public API
 :func:`load_mesh` / :func:`save_mesh` / :func:`sdf_grid` require the ``mesh`` extra.
 """
 
+from auraflow.body.airfoil_profile import naca0012, naca4_profile
+from auraflow.body.blade import blade_mesh, rotor_levelset_case, rotor_mesh
 from auraflow.body.io import load_mesh, save_mesh
 from auraflow.body.mesh import TriMesh
 from auraflow.body.motion import (
@@ -60,13 +62,18 @@ __all__ = [
     "SurfaceVibration",
     "TriMesh",
     "WaypointMotion",
+    "blade_mesh",
     "circular_piston",
     "impermeable_sources",
     "load_mesh",
     "mesh_pressure",
+    "naca0012",
+    "naca4_profile",
     "panel_histories",
     "permeable_surface",
     "pose_derivatives",
+    "rotor_levelset_case",
+    "rotor_mesh",
     "save_mesh",
     "sdf_eval",
     "sdf_grid",

@@ -494,6 +494,10 @@ def rotor_box_case(
     method: str = "actuator_disk",
     is_double: bool = False,
     case_name: str = "rotor_box",
+    rotor: Any | None = None,
+    omega: float | None = None,
+    n_chord: int = 60,
+    hub: bool | dict[str, Any] = False,
 ) -> CFDCase:
     """Box sized for a rotor, with an actuator-disk momentum source.
 
@@ -505,14 +509,15 @@ def rotor_box_case(
       as a JAX-Fluids ``custom_forcing``. Custom-forcing callables receive only
       ``(x, y, z, t)`` (not the flow state), which is exactly enough for a
       prescribed-thrust disk. This is the primary path for JASA-style rotor runs.
-    - ``method="levelset_blades"`` (**deferred**): resolved rotating blades via a
-      moving FLUID-SOLID level set. The level-set machinery now exists
-      (:func:`auraflow.cfd.body_case.levelset_body_case` builds a FLUID-SOLID case
-      for any body :class:`~auraflow.body.mesh.TriMesh`, including a constant-rate
-      :class:`~auraflow.body.motion.SpinMotion` prescribed solid velocity); what
-      is missing is generating watertight blade meshes from a
-      :class:`~auraflow.core.blade.BladeGeometry`. Until that exists this raises
-      ``NotImplementedError`` pointing at :func:`levelset_body_case`.
+    - ``method="levelset_blades"`` (**implemented**): resolved rotating blades via
+      a moving FLUID-SOLID level set. Requires a
+      :class:`~auraflow.core.blade.Rotor` (``rotor=``); the blades are lofted into
+      a watertight :class:`~auraflow.body.mesh.TriMesh`
+      (:func:`auraflow.body.blade.rotor_mesh`) and immersed as a prescribed
+      constant-rate spinning solid via
+      :func:`auraflow.body.blade.rotor_levelset_case`. The box is the same cube
+      (half-edge ``box_radii * rotor_radius``, hub-centred). Resolution-hungry --
+      intended for GPU runs. Without ``rotor`` it raises ``NotImplementedError``.
 
     Args:
         medium: Ambient medium (default sea-level ISA).
@@ -527,15 +532,25 @@ def rotor_box_case(
         cfl: Acoustic CFL for the fixed timestep.
         tip_mach: Expected tip Mach number, used only to bound the timestep.
         end_time: Physical end time [s] (default: several box-crossing times).
-        method: ``"actuator_disk"`` (implemented) or ``"levelset_blades"`` (stub).
+        method: ``"actuator_disk"`` or ``"levelset_blades"`` (both implemented).
         is_double: Use float64 compute.
         case_name: JAX-Fluids case name.
+        rotor: A :class:`~auraflow.core.blade.Rotor`, **required** for
+            ``method="levelset_blades"`` (the blade geometry to loft). Ignored by
+            the actuator-disk path.
+        omega: Rotor angular rate [rad/s] for ``method="levelset_blades"``
+            (default: derived from ``tip_mach`` as ``tip_mach * c0 / rotor_radius``,
+            with ``rotor.spin_direction`` sign).
+        n_chord: Chordwise section resolution for the lofted blades
+            (``method="levelset_blades"`` only).
+        hub: Hub option for the lofted rotor mesh (``method="levelset_blades"``).
 
     Returns:
-        A :class:`CFDCase` for ``method="actuator_disk"``.
+        A :class:`CFDCase` (a :class:`~auraflow.cfd.body_case.LevelsetBodyCase` for
+        ``method="levelset_blades"``).
 
     Raises:
-        NotImplementedError: for ``method="levelset_blades"``.
+        NotImplementedError: for ``method="levelset_blades"`` without ``rotor``.
         ValueError: for an unknown ``method`` or ``thrust_axis``.
     """
     medium = Medium() if medium is None else medium
@@ -557,17 +572,37 @@ def rotor_box_case(
         disk_thickness = 4.0 * dx
 
     if method == "levelset_blades":
-        raise NotImplementedError(
-            "Resolved moving-levelset blades are deferred. The FLUID-SOLID "
-            "level-set machinery exists -- use "
-            "auraflow.cfd.body_case.levelset_body_case(blade_mesh, "
-            "SpinMotion.constant(axis, omega, center=hub), box_lo=..., box_hi=..., "
-            "cells=...) to immerse a rotating blade body (it builds the level-set "
-            "field, ONE-WAY solid coupling, and the prescribed rotational solid "
-            "velocity). What is still missing is generating watertight blade "
-            "TriMeshes from a core.blade.BladeGeometry (future work); this is "
-            "resolution-hungry and intended for GPU runs. Use "
-            "method='actuator_disk' for the primary rotor-noise path."
+        if rotor is None:
+            raise NotImplementedError(
+                "method='levelset_blades' needs a rotor= (core.blade.Rotor) to "
+                "loft into blade meshes. Pass rotor=... (and optionally omega=..., "
+                "n_chord=..., hub=...); the box is the same hub-centred cube as the "
+                "actuator-disk path. Use method='actuator_disk' for the prescribed-"
+                "thrust disk instead."
+            )
+        # Lazy import: auraflow.body.blade imports cfd.body_case -> cfd.case, so a
+        # top-level import here would create a cycle.
+        from auraflow.body.blade import rotor_levelset_case
+
+        axis_vec = {"x": (1.0, 0.0, 0.0), "y": (0.0, 1.0, 0.0), "z": (0.0, 0.0, 1.0)}[thrust_axis]
+        if omega is None:
+            omega = float(rotor.spin_direction * tip_mach * float(medium.c0) / rotor_radius)
+        return rotor_levelset_case(
+            rotor,
+            omega=omega,
+            box_lo=(domain.x_range[0], domain.y_range[0], domain.z_range[0]),
+            box_hi=(domain.x_range[1], domain.y_range[1], domain.z_range[1]),
+            cells=cells,
+            axis=axis_vec,
+            center=hub_center,
+            medium=medium,
+            hub=hub,
+            n_chord=n_chord,
+            mach_max=tip_mach,
+            cfl=cfl,
+            end_time=end_time,
+            is_double=is_double,
+            case_name=case_name,
         )
     if method != "actuator_disk":
         raise ValueError(f"unknown method {method!r}")
