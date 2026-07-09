@@ -34,8 +34,15 @@ run WILL OOM-kill the user's tmux. Rules:
 
 - `uv run pytest ...` / `uv run ruff check src tests scripts` /
   `uv run basedpyright src/auraflow/<module>` (run checks one at a time).
-- Extras: `viz` (matplotlib), `cfd` (jaxfluids, git-pinned), `data` (dload-ml).
+- Extras: `viz` (matplotlib), `viz-live` (websockets), `cfd` (jaxfluids, git-pinned),
+  `mesh` (trimesh), `data` (dload-ml), `gpu` (jax[cuda12] + explicit nvidia wheels).
   Base `import auraflow` must always work without any extra.
+- **Kaggle GPU jobs**: jax silently falls back to CPU unless the pip nvidia lib dirs
+  are PREPENDED to `LD_LIBRARY_PATH` (Kaggle's `/usr/local/cuda/lib64` lacks
+  libcusparse and shadows the wheels; clearing the variable loses libcuda). Wrap the
+  job command:
+  `bash -c 'NV=$(uv run --extra gpu python -c "import glob,os,sysconfig;print(\":\".join(sorted(glob.glob(os.path.join(sysconfig.get_paths()[\"purelib\"],\"nvidia\",\"*\",\"lib\")))))"); export LD_LIBRARY_PATH="$NV:/usr/local/nvidia/lib64"; uv run --extra gpu ... '`
+  and verify with a printed `jax.devices()` — trust only `CudaDevice`, never runtime feel.
 - float64 everywhere in acoustics; tests enable x64 via `tests/conftest.py`.
 - Dataset outputs are managed with dload (R2 bucket configured in
   `dload.toml`, creds in `.env`); GPU jobs via omnirun (`omnirun.toml`).
