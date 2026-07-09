@@ -34,6 +34,12 @@ Driver (:mod:`auraflow.cfd.run`):
 - :class:`SurfaceHistory`
 """
 
+from auraflow.cfd.body_case import (
+    LevelsetBodyCase,
+    PermeableMeshSurface,
+    levelset_body_case,
+    permeable_mesh_surface,
+)
 from auraflow.cfd.case import (
     BoxDomain,
     CFDCase,
@@ -58,11 +64,15 @@ from auraflow.cfd.sphere import (
 __all__ = [
     "BoxDomain",
     "CFDCase",
+    "LevelsetBodyCase",
+    "PermeableMeshSurface",
     "PermeableSphere",
     "SurfaceHistory",
     "acoustic_box_case",
     "acoustic_timestep",
     "fibonacci_sphere",
+    "levelset_body_case",
+    "permeable_mesh_surface",
     "points_per_wavelength",
     "propagate_to_observers",
     "resolution_for_frequency",

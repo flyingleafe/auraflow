@@ -12,8 +12,10 @@ Two halves:
 
 Backend adapters build the scene/frame payloads: :mod:`auraflow.viz.cfd` for the
 step-by-step CFD driver (:func:`auraflow.cfd.run.run_acoustic_case` takes a
-``viz=`` argument) and :mod:`auraflow.viz.flyover` for replaying a CONA
-:class:`~auraflow.cona.flight.FlightHistory`.
+``viz=`` argument), :mod:`auraflow.viz.flyover` for replaying a CONA
+:class:`~auraflow.cona.flight.FlightHistory`, and :mod:`auraflow.viz.body` for
+streaming a general :class:`~auraflow.body.mesh.TriMesh` + motion replay
+(protocol v2 mesh + per-mesh pose channel).
 
 The wire protocol (:mod:`auraflow.viz.stream`) is pure NumPy/stdlib and imports
 with the base install. The server needs the ``viz-live`` extra (``websockets``),

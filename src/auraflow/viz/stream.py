@@ -55,22 +55,26 @@ __all__ = [
 ]
 
 # Bump when the header schema changes incompatibly; the frontend checks it.
-PROTOCOL_VERSION = 1
+# v2 adds optional ``meshes`` (imported/parametric triangle meshes) to the scene
+# and a per-mesh ``mesh_poses`` channel to frames (general-body streaming).
+PROTOCOL_VERSION = 2
 
 # dtypes allowed in the binary payload (compact, JSON-nameable, cross-language).
-_ALLOWED_DTYPES = ("float32", "int32", "uint8")
+# ``uint32`` carries triangle index buffers (three.js wants an unsigned index).
+_ALLOWED_DTYPES = ("float32", "int32", "uint32", "uint8")
 
 
 def _coerce_array(a: Any) -> np.ndarray:
     """Cast an array-like to a C-contiguous, payload-legal NumPy array.
 
     float64 -> float32 (fields/positions/pressures ship single precision);
-    integer kinds -> int32; everything else must already be an allowed dtype.
+    ``uint32`` is preserved (triangle index buffers); other integer kinds ->
+    int32; everything else must already be an allowed dtype.
     """
     arr = np.ascontiguousarray(a)
     if arr.dtype == np.float64 or arr.dtype == np.float16:
         arr = arr.astype(np.float32)
-    elif np.issubdtype(arr.dtype, np.integer) and arr.dtype.name != "int32":
+    elif np.issubdtype(arr.dtype, np.integer) and arr.dtype.name not in ("int32", "uint32"):
         arr = arr.astype(np.int32)
     if arr.dtype.name not in _ALLOWED_DTYPES:
         raise ValueError(f"array dtype {arr.dtype} not supported; use one of {_ALLOWED_DTYPES}")
@@ -238,6 +242,7 @@ def encode_scene(
     sphere_points: Any | None = None,
     mics: Any | None = None,
     rotors: list[dict[str, Any]] | None = None,
+    meshes: list[Mapping[str, Any]] | None = None,
     slice_plane: dict[str, Any] | None = None,
     fields: list[str] | None = None,
     dt: float | None = None,
@@ -256,6 +261,14 @@ def encode_scene(
         mics: Microphone/observer positions ``[M, 3]`` [m], or ``None``.
         rotors: Per-rotor layout dicts, each ``{"hub": [3], "radius": r,
             "n_blades": B, "axis": [3], "arm": [3] | None}`` (world frame, m).
+        meshes: Triangle meshes to render (imported/parametric bodies). Each is a
+            mapping with ``"vertices"`` ``[V, 3]`` [m] and ``"faces"`` ``[F, 3]``
+            or flattened ``[3F]`` (0-based indices), plus optional ``"name"``,
+            ``"color"`` ``[3]`` (0..1 RGB), ``"opacity"`` (0..1), and per-vertex
+            ``"colors"`` ``[V, 3]`` (0..1 RGB) to shade the surface by a scalar.
+            Vertices/faces/colors are shipped in the binary payload (vertices and
+            colors float32, faces uint32); the rest go in the header ``meshes``
+            list with the array offsets referenced by mesh index.
         slice_plane: Field-slice geometry for the textured plane, e.g.
             ``{"axis": "y", "coord": 0.0, "u_range": [lo, hi], "v_range": [lo,
             hi], "shape": [H, W]}``; ``None`` if no slice is streamed.
@@ -287,6 +300,28 @@ def encode_scene(
         arrays["sphere_points"] = np.asarray(sphere_points, dtype=np.float32)
     if mics is not None:
         arrays["mics"] = np.asarray(mics, dtype=np.float32)
+    if meshes:
+        mesh_meta: list[dict[str, Any]] = []
+        for i, mesh in enumerate(meshes):
+            verts = np.asarray(mesh["vertices"], dtype=np.float32).reshape(-1, 3)
+            faces = np.asarray(mesh["faces"]).reshape(-1).astype(np.uint32)
+            arrays[f"mesh{i}_vertices"] = verts
+            arrays[f"mesh{i}_faces"] = faces
+            meta: dict[str, Any] = {
+                "name": str(mesh.get("name", f"mesh{i}")),
+                "n_vertices": int(verts.shape[0]),
+                "n_faces": int(faces.shape[0] // 3),
+                "opacity": float(mesh.get("opacity", 1.0)),
+            }
+            if mesh.get("color") is not None:
+                meta["color"] = [float(v) for v in np.asarray(mesh["color"]).ravel()[:3]]
+            if mesh.get("colors") is not None:
+                arrays[f"mesh{i}_colors"] = np.asarray(mesh["colors"], dtype=np.float32).reshape(
+                    -1, 3
+                )
+                meta["has_colors"] = True
+            mesh_meta.append(meta)
+        header["meshes"] = mesh_meta
     return encode_message(header, arrays)
 
 
@@ -303,6 +338,7 @@ def encode_frame(
     vehicle_pos: Any | None = None,
     vehicle_R: Any | None = None,
     rotor_azimuths: Any | None = None,
+    mesh_poses: Any | None = None,
     extra: Mapping[str, Any] | None = None,
 ) -> bytes:
     """Build a per-step ``frame`` message.
@@ -325,6 +361,10 @@ def encode_frame(
         vehicle_pos: Vehicle position, world frame ``[3]`` [m].
         vehicle_R: Vehicle attitude (world<-body) flattened ``[9]`` (row-major).
         rotor_azimuths: Reference-blade azimuth per rotor ``[Nr]`` [rad].
+        mesh_poses: Per-scene-mesh world pose, shape ``[N, 12]``: each row is the
+            body-origin position ``[3]`` [m] followed by the row-major
+            body-to-world rotation ``[9]``. Animates the scene ``meshes`` in
+            order (see :func:`encode_scene`); ``None`` leaves them at the origin.
         extra: Additional JSON-serializable header metadata.
 
     Returns:
@@ -339,6 +379,10 @@ def encode_frame(
         header["vehicle_R"] = [float(v) for v in np.asarray(vehicle_R).ravel()]
     if rotor_azimuths is not None:
         header["rotor_azimuths"] = [float(v) for v in np.asarray(rotor_azimuths).ravel()]
+    if mesh_poses is not None:
+        header["mesh_poses"] = [
+            [float(v) for v in row] for row in np.asarray(mesh_poses, dtype=float).reshape(-1, 12)
+        ]
     if extra:
         header.update(dict(extra))
 

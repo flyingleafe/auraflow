@@ -505,12 +505,14 @@ def rotor_box_case(
       as a JAX-Fluids ``custom_forcing``. Custom-forcing callables receive only
       ``(x, y, z, t)`` (not the flow state), which is exactly enough for a
       prescribed-thrust disk. This is the primary path for JASA-style rotor runs.
-    - ``method="levelset_blades"`` (**stub**): resolved rotating blades via a
-      moving FLUID-SOLID level set. Feasible in principle (JAX-Fluids ships a
-      moving-solid example and ``solid_coupling.dynamic``) but resolution-hungry
-      and needs a rotating-solid level-set field + prescribed solid-velocity
-      lambdas of ``(x, y, z, t)`` plus a ``levelset`` numerical block. Raises
-      ``NotImplementedError`` with guidance.
+    - ``method="levelset_blades"`` (**deferred**): resolved rotating blades via a
+      moving FLUID-SOLID level set. The level-set machinery now exists
+      (:func:`auraflow.cfd.body_case.levelset_body_case` builds a FLUID-SOLID case
+      for any body :class:`~auraflow.body.mesh.TriMesh`, including a constant-rate
+      :class:`~auraflow.body.motion.SpinMotion` prescribed solid velocity); what
+      is missing is generating watertight blade meshes from a
+      :class:`~auraflow.core.blade.BladeGeometry`. Until that exists this raises
+      ``NotImplementedError`` pointing at :func:`levelset_body_case`.
 
     Args:
         medium: Ambient medium (default sea-level ISA).
@@ -556,13 +558,16 @@ def rotor_box_case(
 
     if method == "levelset_blades":
         raise NotImplementedError(
-            "Resolved moving-levelset blades are not yet implemented. Required: "
-            "(1) a 'levelset' numerical block with a FLUID-SOLID model and "
-            "halo_cells; (2) an initial 'levelset' field lambda describing the "
-            "blade geometry; (3) prescribed solid-velocity lambdas of (x, y, z, t) "
-            "encoding the rotation; (4) solid_coupling.dynamic. This is "
-            "resolution-hungry (blades must be grid-resolved) and is intended for "
-            "GPU runs. Use method='actuator_disk' for the primary path."
+            "Resolved moving-levelset blades are deferred. The FLUID-SOLID "
+            "level-set machinery exists -- use "
+            "auraflow.cfd.body_case.levelset_body_case(blade_mesh, "
+            "SpinMotion.constant(axis, omega, center=hub), box_lo=..., box_hi=..., "
+            "cells=...) to immerse a rotating blade body (it builds the level-set "
+            "field, ONE-WAY solid coupling, and the prescribed rotational solid "
+            "velocity). What is still missing is generating watertight blade "
+            "TriMeshes from a core.blade.BladeGeometry (future work); this is "
+            "resolution-hungry and intended for GPU runs. Use "
+            "method='actuator_disk' for the primary rotor-noise path."
         )
     if method != "actuator_disk":
         raise ValueError(f"unknown method {method!r}")

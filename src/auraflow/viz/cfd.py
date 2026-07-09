@@ -20,6 +20,7 @@ import numpy as np
 from auraflow.viz.stream import downsample_slice
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
+    from auraflow.cfd.body_case import PermeableMeshSurface
     from auraflow.cfd.case import BoxDomain
     from auraflow.cfd.sphere import PermeableSphere
 
@@ -45,7 +46,7 @@ def _plane_ranges(
 
 def cfd_scene_kwargs(
     domain: BoxDomain,
-    sphere: PermeableSphere,
+    sphere: PermeableSphere | PermeableMeshSurface,
     *,
     field: str = "p",
     slice_axis: str = "z",

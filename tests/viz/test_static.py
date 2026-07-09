@@ -24,5 +24,7 @@ def test_index_references_app_js():
 def test_app_js_speaks_the_protocol():
     js = _static().joinpath("app.js").read_text(encoding="utf-8")
     # Frontend and Python must agree on the protocol version.
-    assert "PROTOCOL_VERSION = 1" in js
+    from auraflow.viz.stream import PROTOCOL_VERSION
+
+    assert f"PROTOCOL_VERSION = {PROTOCOL_VERSION}" in js
     assert "decodeMessage" in js

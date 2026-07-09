@@ -39,6 +39,7 @@ from auraflow.core.medium import Medium
 from auraflow.fwh.f1a import f1a_permeable_static
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
+    from auraflow.cfd.body_case import PermeableMeshSurface
     from auraflow.fwh.geometry import radiation_vectors  # noqa: F401
     from auraflow.viz.server import VizStreamer
 
@@ -84,7 +85,7 @@ def _interior_primitives(jxf_buffers: Any, domain_information: Any) -> Array:
 
 def run_acoustic_case(
     case: CFDCase,
-    sphere: PermeableSphere,
+    sphere: PermeableSphere | PermeableMeshSurface,
     n_steps: int,
     sample_every: int = 1,
     warmup_steps: int = 0,
@@ -100,8 +101,10 @@ def run_acoustic_case(
 
     Args:
         case: The :class:`~auraflow.cfd.case.CFDCase` to run.
-        sphere: Static permeable :class:`~auraflow.cfd.sphere.PermeableSphere`;
-            must lie strictly inside ``case.domain``.
+        sphere: Static permeable data surface -- a
+            :class:`~auraflow.cfd.sphere.PermeableSphere` or a
+            :class:`~auraflow.cfd.body_case.PermeableMeshSurface` (any closed
+            mesh); must lie strictly inside ``case.domain``.
         n_steps: Number of integration steps (static int).
         sample_every: Sample the sphere every this many steps (static int).
         warmup_steps: Steps to run before the first sample (transient discard).
@@ -141,7 +144,13 @@ def run_acoustic_case(
     sim_manager = SimulationManager(input_manager)
     domain_information = input_manager.domain_information
 
-    jxf_buffers = init_manager.initialization()
+    # Level-set body cases carry an initial level-set field (the body SDF sampled
+    # at the cell centres, negative-inside per JAX-Fluids' convention); inject it.
+    levelset_init = getattr(case, "levelset_init", None)
+    if levelset_init is not None:
+        jxf_buffers = init_manager.initialization(user_levelset_init=jnp.asarray(levelset_init))
+    else:
+        jxf_buffers = init_manager.initialization()
     ml_parameters = ParametersSetup()
     ml_callables = CallablesSetup()
 
@@ -210,7 +219,7 @@ def run_acoustic_case(
 
 def propagate_to_observers(
     surface_history: SurfaceHistory,
-    sphere: PermeableSphere,
+    sphere: PermeableSphere | PermeableMeshSurface,
     observers: Array,
     medium: Medium,
     n_obs: int | None = None,

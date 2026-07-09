@@ -167,12 +167,20 @@ Both compose (a vibrating surface on a moving body).
 - `pipeline.py` — end-to-end `simulate(vehicle, mission, observers) -> signals`.
 
 ### auraflow.cfd
-- Foundation library per ecosystem survey (JAXFLUIDS candidate — pending evaluation).
-- `domain.py` — near-field box/sphere setup, sponge zones, non-reflecting BCs.
-- `rotor_source.py` — rotor representation: actuator line forcing from BEMT loads
-  (first target), immersed-boundary resolved blades (stretch goal).
-- `sampling.py` — interpolation of (ρ, u, p) onto permeable-sphere panels each sample step.
-- `coupling.py` — drive `auraflow.fwh.permeable` from sampled surface data.
+- Foundation: JAX-Fluids 0.2.1 (evaluated — `docs/research/jaxfluids-evaluation.md`).
+- `case.py` — programmatic case/numerical-setup builders: `acoustic_box_case` (sponge
+  boundaries, optional pulse), `rotor_box_case` (actuator-disk `custom_forcing`;
+  `method="levelset_blades"` **(deferred)** → points at `body_case.levelset_body_case`,
+  blocked only on generating blade `TriMesh`es from `core.blade.BladeGeometry`).
+- `sphere.py` — permeable Fibonacci sphere + differentiable trilinear `sample_primitives`.
+- `body_case.py` — general-body integration: `levelset_body_case(mesh, motion, box…)` builds
+  a **FLUID-SOLID level-set** case (the body SDF is the level-set field, negative-inside per
+  JAX-Fluids; injected via `user_levelset_init`). Static solids and prescribed-moving solids
+  (`solid_coupling.dynamic="ONE-WAY"`, analytic rigid velocity field) are supported;
+  fluid-driven **two-way** rigid-body dynamics is **(deferred)**. `permeable_mesh_surface(mesh)`
+  generalizes the permeable sphere to any closed mesh (duck-types `PermeableSphere`).
+- `run.py` — manual integration-step driver: march, sample the permeable surface in memory,
+  drive `auraflow.fwh.f1a_permeable_static`. Injects the body level-set for `LevelsetBodyCase`.
 
 ### auraflow.signal
 - `spectra.py` — rfft helpers, Welch PSD (Hann, 50% overlap), SPL/OASPL (re 20 µPa),
@@ -186,7 +194,11 @@ Both compose (a vibrating surface on a moving body).
 
 ### auraflow.viz
 - Live: simulation loop pushes downsampled field slices/isosurfaces over websocket to a
-  self-contained three.js page. Offline: replay saved snapshots. (Design TBD in task #10.)
+  self-contained three.js page. Offline: replay saved snapshots.
+- Wire protocol v2 (`stream.py`): scene carries optional imported/parametric `meshes`
+  (vertices + uint32 faces, optional per-vertex colours); frames carry a per-mesh `mesh_poses`
+  channel. `body.py` streams a `TriMesh` + `Motion` replay (pose per frame, optional per-face
+  scalar → vertex colours). Backend adapters: `cfd.py`, `flyover.py`, `body.py`.
 
 ## Testing strategy
 

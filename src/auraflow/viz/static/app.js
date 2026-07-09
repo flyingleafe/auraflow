@@ -12,13 +12,15 @@
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 
-const PROTOCOL_VERSION = 1;
+const PROTOCOL_VERSION = 2;
 const MAX_BUFFER = 3000; // frames kept for replay/scrub
 
 // --------------------------------------------------------------------------
 // Protocol decode (mirror of auraflow.viz.stream.encode_message)
 // --------------------------------------------------------------------------
-const DTYPE_CTOR = { float32: Float32Array, int32: Int32Array, uint8: Uint8Array };
+const DTYPE_CTOR = {
+  float32: Float32Array, int32: Int32Array, uint32: Uint32Array, uint8: Uint8Array,
+};
 
 function decodeMessage(buf) {
   const dv = new DataView(buf);
@@ -87,6 +89,7 @@ let slicePlane = null;    // textured plane
 let sliceTexture = null;
 let vehicleGroup = null;   // group with per-rotor disks
 let rotorDisks = [];       // [{mesh, spin}]
+let bodyMeshes = [];       // THREE.Mesh, one per scene mesh (pose-animated)
 let sceneMeta = null;
 
 function disposeGroup(g) {
@@ -113,7 +116,7 @@ function buildScene(header, arrays) {
   // World is z-up in AuraFlow; make three.js agree.
   group.up = new THREE.Vector3(0, 0, 1);
   scene.add(group);
-  sphereCloud = null; slicePlane = null; vehicleGroup = null; rotorDisks = [];
+  sphereCloud = null; slicePlane = null; vehicleGroup = null; rotorDisks = []; bodyMeshes = [];
 
   const bmin = header.box_min, bmax = header.box_max;
   const cx = (bmin[0] + bmax[0]) / 2, cy = (bmin[1] + bmax[1]) / 2, cz = (bmin[2] + bmax[2]) / 2;
@@ -210,6 +213,39 @@ function buildScene(header, arrays) {
     group.add(vehicleGroup);
   }
 
+  // Imported / parametric body meshes (flat-shaded, optionally translucent).
+  if (header.meshes && header.meshes.length) {
+    for (let i = 0; i < header.meshes.length; i++) {
+      const meta = header.meshes[i];
+      const verts = arrays["mesh" + i + "_vertices"];
+      const faces = arrays["mesh" + i + "_faces"];
+      if (!verts || !faces) continue;
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute("position", new THREE.BufferAttribute(verts.data, 3));
+      geo.setIndex(new THREE.BufferAttribute(faces.data, 1));
+      const cols = arrays["mesh" + i + "_colors"];
+      if (cols) geo.setAttribute("color", new THREE.BufferAttribute(cols.data, 3));
+      geo.computeVertexNormals();
+      const baseColor = meta.color
+        ? new THREE.Color(meta.color[0], meta.color[1], meta.color[2])
+        : new THREE.Color(0x9db4d0);
+      const opacity = meta.opacity != null ? meta.opacity : 1.0;
+      const mat = new THREE.MeshStandardMaterial({
+        color: baseColor,
+        vertexColors: !!cols,
+        flatShading: true,
+        metalness: 0.1,
+        roughness: 0.75,
+        side: THREE.DoubleSide,
+        transparent: opacity < 1.0,
+        opacity,
+      });
+      const mesh = new THREE.Mesh(geo, mat);
+      group.add(mesh);
+      bodyMeshes.push(mesh);
+    }
+  }
+
   // Camera framing.
   camera.position.set(cx + diag, cy - diag, cz + diag * 0.7);
   controls.target.set(cx, cy, cz);
@@ -299,6 +335,21 @@ function updateVehicle(header) {
   }
 }
 
+function updateMeshes(header) {
+  if (!bodyMeshes.length || !header.mesh_poses) return;
+  for (let i = 0; i < bodyMeshes.length && i < header.mesh_poses.length; i++) {
+    const p = header.mesh_poses[i]; // [px,py,pz, r0..r8] (row-major world<-body)
+    bodyMeshes[i].position.set(p[0], p[1], p[2]);
+    const m = new THREE.Matrix4().set(
+      p[3], p[4], p[5], 0,
+      p[6], p[7], p[8], 0,
+      p[9], p[10], p[11], 0,
+      0, 0, 0, 1
+    );
+    bodyMeshes[i].quaternion.setFromRotationMatrix(m);
+  }
+}
+
 // --------------------------------------------------------------------------
 // Strip chart (selected pressure traces)
 // --------------------------------------------------------------------------
@@ -378,6 +429,7 @@ function applyFrame(f) {
   updateSliceTexture(arrays.field_slice, header.slice_range);
   updateSpherePressure(arrays.sphere_p);
   updateVehicle(header);
+  updateMeshes(header);
   updateChart(header, arrays);
   document.getElementById("t").textContent = (header.t ?? 0).toFixed(4);
   document.getElementById("frame").textContent = header.step ?? 0;
