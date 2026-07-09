@@ -20,7 +20,9 @@ Public API
   :class:`SpinMotion`, :class:`WaypointMotion`, :class:`ComposedMotion`,
   :class:`SurfaceVibration`, :func:`pose_derivatives`, :func:`panel_histories`,
   :class:`PanelHistories`.
-- FW-H sources: :func:`permeable_surface` (impermeable/speaker adapters: next task).
+- FW-H sources: :func:`permeable_surface`, :func:`impermeable_sources`,
+  :func:`mesh_pressure` (the one-call mesh radiation path).
+- Loudspeaker: :class:`Speaker`, :func:`circular_piston`, :func:`select_faces`.
 - Signed distance: :func:`sdf_grid`, :func:`sdf_eval`.
 
 ``import auraflow.body`` works without trimesh installed; only
@@ -32,6 +34,7 @@ from auraflow.body.mesh import TriMesh
 from auraflow.body.motion import (
     ComposedMotion,
     ConstantVelocity,
+    HarmonicTranslation,
     Motion,
     PanelHistories,
     SpinMotion,
@@ -42,23 +45,30 @@ from auraflow.body.motion import (
     pose_derivatives,
 )
 from auraflow.body.sdf import sdf_eval, sdf_grid
-from auraflow.body.sources import permeable_surface
+from auraflow.body.sources import impermeable_sources, mesh_pressure, permeable_surface
+from auraflow.body.speaker import Speaker, circular_piston, select_faces
 
 __all__ = [
     "ComposedMotion",
     "ConstantVelocity",
+    "HarmonicTranslation",
     "Motion",
     "PanelHistories",
+    "Speaker",
     "SpinMotion",
     "StaticPose",
     "SurfaceVibration",
     "TriMesh",
     "WaypointMotion",
+    "circular_piston",
+    "impermeable_sources",
     "load_mesh",
+    "mesh_pressure",
     "panel_histories",
     "permeable_surface",
     "pose_derivatives",
     "save_mesh",
     "sdf_eval",
     "sdf_grid",
+    "select_faces",
 ]

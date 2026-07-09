@@ -18,6 +18,11 @@ Shared: `auraflow.core` (geometry, frames, airfoils), `auraflow.fwh` (FW-H
 formulations), `auraflow.signal` (spectra, SPL). `auraflow.datasets` reproduces
 the JASA flyover data-generation recipe.
 
+`auraflow.body` makes *any* triangle mesh radiate — imported 3D models,
+airframes, or a vibrating loudspeaker membrane — through the same FW-H core
+(`mesh_pressure`). Build or import a speaker, play a waveform, and read the
+pressure at listeners: see **[`docs/speaker.md`](docs/speaker.md)**.
+
 ## Install
 
 ```sh

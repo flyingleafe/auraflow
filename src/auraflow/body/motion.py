@@ -34,6 +34,7 @@ Vec3 = ArrayLike | tuple[float, float, float]
 __all__ = [
     "ComposedMotion",
     "ConstantVelocity",
+    "HarmonicTranslation",
     "Motion",
     "PanelHistories",
     "SpinMotion",
@@ -176,6 +177,58 @@ class ConstantVelocity(Motion):
     def pose(self, t: ArrayLike) -> tuple[Array, Array]:
         t = jnp.asarray(t, dtype=jnp.float64)
         return self.R, self.x0 + self.v * t
+
+
+class HarmonicTranslation(Motion):
+    """Rigid sinusoidal translation along a fixed direction (orientation fixed).
+
+    ``x(t) = x0 + dir * amplitude * sin(omega t)`` with constant ``R``. The
+    body-point velocity is therefore ``dir * amplitude * omega * cos(omega t)``
+    (velocity amplitude ``U0 = amplitude * omega``) and the acceleration
+    ``-dir * amplitude * omega^2 * sin(omega t)``, both delivered exactly by the
+    :func:`pose_derivatives` autodiff (no finite differences). Used for the
+    oscillating-rigid-sphere dipole gate.
+
+    Attributes:
+        x0: Mean world position of the body origin [m], shape ``[3]``.
+        direction: Unit oscillation direction (normalized internally), shape ``[3]``.
+        amplitude: Displacement amplitude [m], scalar.
+        omega: Angular frequency [rad/s], scalar.
+        R: Body-to-world rotation, shape ``[3, 3]``.
+    """
+
+    x0: Array
+    direction: Array
+    amplitude: Array
+    omega: Array
+    R: Array
+
+    def __init__(
+        self,
+        x0: Vec3,
+        direction: Vec3,
+        amplitude: ArrayLike,
+        omega: ArrayLike,
+        R: ArrayLike | None = None,
+    ):
+        """Args:
+        x0: Mean world position [m], shape ``[3]``.
+        direction: Oscillation direction, shape ``[3]`` (normalized internally).
+        amplitude: Displacement amplitude [m], scalar.
+        omega: Angular frequency [rad/s], scalar.
+        R: Body-to-world rotation, shape ``[3, 3]`` (default identity).
+        """
+        self.x0 = jnp.asarray(x0, dtype=jnp.float64)
+        d = jnp.asarray(direction, dtype=jnp.float64)
+        self.direction = d / jnp.linalg.norm(d)
+        self.amplitude = jnp.asarray(amplitude, dtype=jnp.float64)
+        self.omega = jnp.asarray(omega, dtype=jnp.float64)
+        self.R = jnp.eye(3) if R is None else jnp.asarray(R, dtype=jnp.float64)
+
+    def pose(self, t: ArrayLike) -> tuple[Array, Array]:
+        t = jnp.asarray(t, dtype=jnp.float64)
+        disp = self.amplitude * jnp.sin(self.omega * t)
+        return self.R, self.x0 + self.direction * disp
 
 
 class SpinMotion(Motion):
