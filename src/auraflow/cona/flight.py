@@ -286,6 +286,55 @@ class Multirotor(eqx.Module):
         c_tauf = 0.154
         return cls(mass, inertia, positions, spins, k_f, c_tauf, drag_coeff, motor_tau)
 
+    @classmethod
+    def dji_phantom(
+        cls, drag_coeff: ArrayLike = 0.0, motor_tau: float | None = None
+    ) -> "Multirotor":
+        """Defaults for the DJI Phantom quadrotor (``docs/research/dji-9450-reference.md``).
+
+        Drone-scale counterpart of :meth:`nasa_1pax`. Mass **1.280 kg** (Phantom 3
+        Adv./Pro./4K, the variant that ships the DJI 9450 prop; PUBLISHED);
+        X-arrangement hubs at ``(+-0.1237, +-0.1237)`` m (from the published
+        ``0.350 m`` motor-to-motor diagonal via ``0.5*d*cos45``; rotor plane
+        ``z = 0`` -- the rotor-plane height is not published); spin pattern
+        front-left CW / front-right CCW / rear-left CCW / rear-right CW (diagonal
+        pairs share sense; PUBLISHED community docs). ``k_f`` is calibrated from
+        the hover operating point (per-rotor thrust ``m g / 4`` at the nominal
+        ``5400 RPM`` = ``565.5 rad/s``). Body inertia and ``c_tauf`` are
+        reconstructed (Phantom inertia is not published) -- estimated from the
+        mass/arm distribution and a hover figure-of-merit ``~0.55``; documented
+        assumptions, adequate for the slow level-flight flyover scenarios.
+
+        Args:
+            drag_coeff: Linear wind-drag coefficient [N.s/m].
+            motor_tau: Motor time constant [s] or ``None``.
+
+        Returns:
+            A :class:`Multirotor` for the DJI Phantom vehicle.
+        """
+        mass = 1.280
+        # Reconstructed body inertia [kg.m^2] (not published): from the motor/prop
+        # masses on the +-0.1237 m arms plus a compact battery/shell body.
+        inertia = jnp.diag(jnp.array([0.008, 0.008, 0.015]))
+        d = 0.1237  # 0.5 * 0.350 m diagonal * cos 45deg
+        # Front rotors at +x, rear at -x; columns +-y (rotor plane z = 0).
+        positions = jnp.array(
+            [
+                [d, d, 0.0],  # front-left
+                [d, -d, 0.0],  # front-right
+                [-d, d, 0.0],  # rear-left
+                [-d, -d, 0.0],  # rear-right
+            ]
+        )
+        # front-left CW, front-right CCW, rear-left CCW, rear-right CW
+        # (+1 = CCW from +z, -1 = CW). Diagonal pairs share sense; net yaw zero.
+        spins = jnp.array([-1.0, 1.0, 1.0, -1.0])
+        omega_hover = 565.5  # 5400 RPM
+        thrust_hover = mass * _G / 4.0
+        k_f = thrust_hover / omega_hover**2
+        c_tauf = 0.017  # reconstructed torque/thrust ratio [m] (FM ~0.55 hover)
+        return cls(mass, inertia, positions, spins, k_f, c_tauf, drag_coeff, motor_tau)
+
     def mixing_matrix(self) -> Array:
         r"""Rotor mixing matrix ``B`` mapping per-rotor thrusts to the wrench.
 

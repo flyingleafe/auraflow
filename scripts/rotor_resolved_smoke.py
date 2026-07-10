@@ -38,18 +38,77 @@ from __future__ import annotations
 import argparse
 import math
 import os
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from auraflow.cfd.body_case import PermeableMeshSurface
     from auraflow.cfd.run import SurfaceHistory
+    from auraflow.cona.flight import Multirotor
+    from auraflow.core.blade import BladeGeometry
     from auraflow.core.medium import Medium
+
+VEHICLES = ("nasa-1pax", "dji-9450")
+
+
+@dataclass(frozen=True)
+class VehicleSpec:
+    """Resolved single-source-of-truth accessors for one vehicle module.
+
+    A tiny registry entry so the resolved-CFD scripts can select the NASA 1-Pax
+    or the DJI Phantom 9450 by name without hard-coding either module: it carries
+    the constants the level-set case + FW-H synthesis need and the two factory
+    callables (blade geometry, flight-dynamics multirotor).
+    """
+
+    name: str
+    rotor_radius: float
+    n_blades: int
+    hover_omega: float
+    bpf_hz: float
+    blade: Callable[[int], BladeGeometry]
+    multirotor: Callable[[], Multirotor]
+
+
+def _vehicle_module(name: str) -> VehicleSpec:
+    """Resolve a ``--vehicle`` name to its :class:`VehicleSpec` (single source of truth)."""
+    if name == "nasa-1pax":
+        from auraflow.datasets import nasa_1pax as m
+
+        return VehicleSpec(
+            name="nasa-1pax",
+            rotor_radius=m.ROTOR_RADIUS,
+            n_blades=m.N_BLADES,
+            hover_omega=m.HOVER_OMEGA,
+            bpf_hz=m.BPF_HZ,
+            blade=m.nasa_1pax_blade,
+            multirotor=m.nasa_1pax_multirotor,
+        )
+    if name == "dji-9450":
+        from auraflow.datasets import dji_phantom as m
+
+        return VehicleSpec(
+            name="dji-9450",
+            rotor_radius=m.ROTOR_RADIUS,
+            n_blades=m.N_BLADES,
+            hover_omega=m.HOVER_OMEGA,
+            bpf_hz=m.BPF_HZ,
+            blade=m.dji_9450_blade,
+            multirotor=m.dji_phantom_multirotor,
+        )
+    raise ValueError(f"--vehicle must be one of {VEHICLES}, got {name!r}")
 
 
 def _parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    p.add_argument(
+        "--vehicle",
+        choices=VEHICLES,
+        default="nasa-1pax",
+        help="rotor/vehicle whose blade + constants define the case (default nasa-1pax)",
     )
     p.add_argument("--cells", type=int, default=192, help="cells along x/y (z gets half)")
     p.add_argument("--box-xy", type=float, default=1.5, help="box half-extent in R units (x,y)")
@@ -94,6 +153,7 @@ def build_resolved_case(
     n_chord: int = 32,
     sphere_sub: int = 4,
     medium: Medium | None = None,
+    vehicle: str = "nasa-1pax",
 ) -> ResolvedCase:
     """Build the resolved-rotor level-set CFD case + enclosing permeable ellipsoid.
 
@@ -107,6 +167,9 @@ def build_resolved_case(
         n_chord: Chordwise profile points.
         sphere_sub: Enclosing-ellipsoid icosphere subdivisions.
         medium: Ambient medium (default ISA sea level).
+        vehicle: Which vehicle's rotor to build (``"nasa-1pax"`` or
+            ``"dji-9450"``); resolves the blade geometry + constants via
+            :func:`_vehicle_module`.
 
     Returns:
         A :class:`ResolvedCase`.
@@ -118,10 +181,10 @@ def build_resolved_case(
     from auraflow.cfd.body_case import permeable_mesh_surface
     from auraflow.core.blade import Rotor
     from auraflow.core.medium import Medium
-    from auraflow.datasets.nasa_1pax import HOVER_OMEGA, N_BLADES, ROTOR_RADIUS, nasa_1pax_blade
 
+    spec = _vehicle_module(vehicle)
     medium = Medium() if medium is None else medium
-    r = ROTOR_RADIUS
+    r = spec.rotor_radius
     nxy = int(cells)
     nz = nxy // 2
     # Cubic cells are mandatory for the JAX-Fluids level-set model: keep
@@ -129,10 +192,10 @@ def build_resolved_case(
     dx = 2.0 * box_xy * r / nxy
     box_z = dx * nz / 2.0
 
-    rotor = Rotor(blade=nasa_1pax_blade(n_stations=n_stations), n_blades=N_BLADES)
+    rotor = Rotor(blade=spec.blade(n_stations), n_blades=spec.n_blades)
     case = rotor_levelset_case(
         rotor,
-        omega=HOVER_OMEGA,
+        omega=spec.hover_omega,
         box_lo=(-box_xy * r, -box_xy * r, -box_z),
         box_hi=(box_xy * r, box_xy * r, box_z),
         cells=(nxy, nxy, nz),
@@ -176,7 +239,9 @@ def main() -> int:
 
     jax.config.update("jax_enable_x64", True)
 
-    from auraflow.datasets.nasa_1pax import BPF_HZ, HOVER_OMEGA, ROTOR_RADIUS
+    spec = _vehicle_module(args.vehicle)
+    BPF_HZ = spec.bpf_hz
+    HOVER_OMEGA = spec.hover_omega
 
     built = build_resolved_case(
         cells=args.cells,
@@ -184,8 +249,9 @@ def main() -> int:
         n_stations=args.n_stations,
         n_chord=args.n_chord,
         sphere_sub=args.sphere_sub,
+        vehicle=args.vehicle,
     )
-    r = ROTOR_RADIUS
+    r = spec.rotor_radius
     medium = built.medium
     surface = built.surface
     nxy, nz, dx = built.nxy, built.nz, built.dx

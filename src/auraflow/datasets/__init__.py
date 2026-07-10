@@ -8,9 +8,13 @@ and provides the CONA-vs-CFD comparison plumbing. See the digests
 
 Sub-modules
 -----------
-- :mod:`auraflow.datasets.nasa_1pax` -- the vehicle (single source of truth for
-  the blade geometry; delegates mass/inertia/allocation to
+- :mod:`auraflow.datasets.nasa_1pax` -- the NASA 1-Pax UAM vehicle (single source
+  of truth for its blade geometry; delegates mass/inertia/allocation to
   :class:`auraflow.cona.flight.Multirotor`).
+- :mod:`auraflow.datasets.dji_phantom` -- the DJI Phantom drone-scale vehicle
+  (two-bladed DJI 9450 props; same single-source-of-truth pattern). Constants
+  live in the submodule namespace (they clash with the 1-Pax by design); the
+  factory functions are re-exported here.
 - :mod:`auraflow.datasets.jasa` -- :class:`JASAScenario`, :func:`generate_flyover`,
   the microphone array, scenario grids and ``.npz``/WAV saving.
 - :mod:`auraflow.datasets.compare` -- CONA vs CFD+FW-H comparison metrics
@@ -28,6 +32,15 @@ from auraflow.datasets.compare import (
     compare_cona_vs_cfd,
     compare_signals,
     signal_metrics,
+)
+from auraflow.datasets.dji_phantom import (
+    dji_9450_blade,
+    dji_9450_blade_mesh,
+    dji_phantom_hover_collective,
+    dji_phantom_multirotor,
+    dji_phantom_polar,
+    dji_phantom_rotor_mesh,
+    dji_phantom_vehicle,
 )
 from auraflow.datasets.dload_io import (
     commit_flyovers,
@@ -73,6 +86,13 @@ __all__ = [
     "commit_flyovers",
     "compare_cona_vs_cfd",
     "compare_signals",
+    "dji_9450_blade",
+    "dji_9450_blade_mesh",
+    "dji_phantom_hover_collective",
+    "dji_phantom_multirotor",
+    "dji_phantom_polar",
+    "dji_phantom_rotor_mesh",
+    "dji_phantom_vehicle",
     "flyover_sample",
     "flyover_samples",
     "generate_flyover",

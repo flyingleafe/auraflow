@@ -38,14 +38,48 @@ memory cap. Everything else (real CFD, 44.1 kHz x 1 s) is GPU/omnirun work.
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import os
+import sys
 from typing import Any
+
+_RRS: Any = None
+
+
+def _rrs() -> Any:
+    """Load the sibling ``rotor_resolved_smoke`` module by path (scripts/ is not a package).
+
+    Gives access to its Stage-A builders (``build_resolved_case`` /
+    ``run_resolved_surface``) and the shared ``_vehicle_module`` / ``VehicleSpec``
+    registry (single source of truth for per-vehicle constants + blade geometry).
+    """
+    global _RRS
+    if _RRS is not None:
+        return _RRS
+    here = os.path.dirname(os.path.abspath(__file__))
+    spec = importlib.util.spec_from_file_location(
+        "rotor_resolved_smoke", os.path.join(here, "rotor_resolved_smoke.py")
+    )
+    assert spec is not None and spec.loader is not None
+    rrs = importlib.util.module_from_spec(spec)
+    # Register BEFORE exec: @dataclass resolves cls.__module__ through sys.modules
+    # during class creation and hard-crashes on an unregistered module.
+    sys.modules[spec.name] = rrs
+    spec.loader.exec_module(rrs)
+    _RRS = rrs
+    return rrs
 
 
 def _parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    p.add_argument(
+        "--vehicle",
+        choices=("nasa-1pax", "dji-9450"),
+        default="nasa-1pax",
+        help="rotor/vehicle whose blade + constants define the source (default nasa-1pax)",
     )
     # Stage A source
     p.add_argument("--surface", type=str, default=None, help="saved surface npz (skip CFD)")
@@ -94,16 +128,15 @@ def _select_mics(sel: str) -> tuple[Any, Any]:
     return mics[idx], idx
 
 
-def _smoke_source() -> tuple[dict, dict, float]:
+def _smoke_source(spec: Any) -> tuple[dict, dict, float]:
     """A tiny synthetic breathing-ellipsoid history (no jaxfluids), for --smoke."""
     import numpy as np
 
     from auraflow.body.mesh import TriMesh
     from auraflow.core.medium import Medium
-    from auraflow.datasets.nasa_1pax import HOVER_OMEGA, N_BLADES, ROTOR_RADIUS
 
     medium = Medium()
-    r = ROTOR_RADIUS
+    r = spec.rotor_radius
     mesh = TriMesh.sphere(radius=1.0, subdivisions=1)  # 80 faces
     verts = np.asarray(mesh.vertices) * np.array([1.2 * r, 1.2 * r, 0.6 * r])
     mesh = TriMesh(vertices=verts, faces=mesh.faces)
@@ -112,7 +145,7 @@ def _smoke_source() -> tuple[dict, dict, float]:
         "normals": np.asarray(mesh.normals(), dtype=np.float64),
         "area": np.asarray(mesh.areas(), dtype=np.float64),
     }
-    f_bp = HOVER_OMEGA * N_BLADES / (2.0 * np.pi)
+    f_bp = spec.hover_omega * spec.n_blades / (2.0 * np.pi)
     samples_per_period = 20
     dtau = 1.0 / (f_bp * samples_per_period)
     n_in = 3 * samples_per_period + 3  # ~3 blade periods
@@ -126,14 +159,12 @@ def _smoke_source() -> tuple[dict, dict, float]:
     rho = float(medium.rho0) + 0.01 * (s1 + s2)
     p = float(medium.p0) + 12.0 * (s1 + 0.5 * s2)
     raw = {"tau": tau, "rho": rho, "u": u, "p": p}
-    return surf, raw, HOVER_OMEGA
+    return surf, raw, spec.hover_omega
 
 
-def _load_surface(path: str) -> tuple[dict, dict, float]:
+def _load_surface(path: str, spec: Any) -> tuple[dict, dict, float]:
     """Load a saved rotor_resolved surface npz -> (geom, raw history, omega)."""
     import numpy as np
-
-    from auraflow.datasets.nasa_1pax import HOVER_OMEGA
 
     d = np.load(path)
     if "surf_points" not in d:
@@ -151,31 +182,15 @@ def _load_surface(path: str) -> tuple[dict, dict, float]:
         "u": np.asarray(d["surf_u"], dtype=np.float64),
         "p": np.asarray(d["surf_p"], dtype=np.float64),
     }
-    omega = float(d["omega"]) if "omega" in d else HOVER_OMEGA
+    omega = float(d["omega"]) if "omega" in d else spec.hover_omega
     return surf, raw, omega
 
 
-def _run_cfd(args: argparse.Namespace) -> tuple[dict, dict, float]:
+def _run_cfd(args: argparse.Namespace, spec: Any) -> tuple[dict, dict, float]:
     """Run the resolved-rotor CFD inline (Stage A) -> (geom, raw history, omega)."""
-    import importlib.util
-    import sys
-
     import numpy as np
 
-    from auraflow.datasets.nasa_1pax import HOVER_OMEGA
-
-    # Load the sibling driver by path (robust to how this script is invoked).
-    here = os.path.dirname(os.path.abspath(__file__))
-    spec = importlib.util.spec_from_file_location(
-        "rotor_resolved_smoke", os.path.join(here, "rotor_resolved_smoke.py")
-    )
-    assert spec is not None and spec.loader is not None
-    rrs = importlib.util.module_from_spec(spec)
-    # Register BEFORE exec: @dataclass resolves cls.__module__ through
-    # sys.modules during class creation and hard-crashes on an unregistered
-    # module ("'NoneType' object has no attribute '__dict__'").
-    sys.modules[spec.name] = rrs
-    spec.loader.exec_module(rrs)
+    rrs = _rrs()
     build_resolved_case = rrs.build_resolved_case
     run_resolved_surface = rrs.run_resolved_surface
 
@@ -184,6 +199,7 @@ def _run_cfd(args: argparse.Namespace) -> tuple[dict, dict, float]:
         n_stations=args.n_stations,
         n_chord=args.n_chord,
         sphere_sub=args.sphere_sub,
+        vehicle=args.vehicle,
     )
     hist = run_resolved_surface(built, args.steps, args.sample_every, args.warmup)
     surf = {
@@ -209,10 +225,10 @@ def _run_cfd(args: argparse.Namespace) -> tuple[dict, dict, float]:
             surf_points=surf["points"].astype(np.float32),
             surf_normals=surf["normals"].astype(np.float32),
             surf_area=surf["area"].astype(np.float32),
-            omega=HOVER_OMEGA,
+            omega=spec.hover_omega,
         )
         print(f"[flyover] wrote surface {sp}")
-    return surf, raw, HOVER_OMEGA
+    return surf, raw, spec.hover_omega
 
 
 def main() -> int:
@@ -231,20 +247,23 @@ def main() -> int:
         tile_surface_history,
     )
     from auraflow.core.medium import Medium
-    from auraflow.datasets.nasa_1pax import BPF_HZ, N_BLADES, nasa_1pax_multirotor
+
+    spec = _rrs()._vehicle_module(args.vehicle)
+    BPF_HZ = spec.bpf_hz
+    N_BLADES = spec.n_blades
 
     medium = Medium()
-    layout = nasa_1pax_multirotor()  # hub positions + spin signs (single source of truth)
+    layout = spec.multirotor()  # hub positions + spin signs (single source of truth)
 
     duration = float(args.duration)
     mics_sel = "0,1" if args.smoke else args.mics
     if args.smoke:
         duration = min(duration, 0.12)
-        surf, raw, omega = _smoke_source()
+        surf, raw, omega = _smoke_source(spec)
     elif args.surface:
-        surf, raw, omega = _load_surface(args.surface)
+        surf, raw, omega = _load_surface(args.surface, spec)
     else:
-        surf, raw, omega = _run_cfd(args)
+        surf, raw, omega = _run_cfd(args, spec)
 
     mics, mic_idx = _select_mics(mics_sel)
     t_pass = 0.5 * duration if args.t_pass is None else float(args.t_pass)

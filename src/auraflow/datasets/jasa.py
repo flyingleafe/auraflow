@@ -47,7 +47,7 @@ import math
 import os
 from collections.abc import Sequence
 from dataclasses import asdict, dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import jax
 import jax.numpy as jnp
@@ -61,6 +61,7 @@ from auraflow.cona.broadband import rotor_broadband_spectrogram
 from auraflow.cona.flight import ControllerGains, simulate, straight_flyover
 from auraflow.cona.gusts import dryden_gust
 from auraflow.cona.tonal import cona_tonal_noise
+from auraflow.core.blade import Vehicle
 from auraflow.core.medium import Medium
 from auraflow.datasets.nasa_1pax import (
     BPF_HZ,
@@ -70,6 +71,9 @@ from auraflow.datasets.nasa_1pax import (
     nasa_1pax_vehicle,
 )
 from auraflow.signal.spectra import third_octave_bands
+
+if TYPE_CHECKING:
+    from auraflow.cona.flight import Multirotor
 
 __all__ = [
     "JASAScenario",
@@ -211,6 +215,9 @@ def generate_flyover(
     medium: Medium | None = None,
     polar: Any = None,
     collective: float | None = None,
+    vehicle: Vehicle | None = None,
+    multirotor: Multirotor | None = None,
+    bpf_hz: float | None = None,
     n_stations: int = 16,
     n_source_times: int | None = None,
     n_frames: int = 48,
@@ -231,7 +238,20 @@ def generate_flyover(
             ``c0``/``rho0`` over 30 m is negligible).
         polar: Airfoil polar (default :func:`nasa_1pax_polar`).
         collective: Airload collective pitch [rad]; default hover-trimmed
-            (:func:`nasa_1pax_hover_collective`).
+            (:func:`nasa_1pax_hover_collective`). Required when a custom
+            ``vehicle`` is given (no generic hover-trim is attempted here).
+        vehicle: Geometric :class:`~auraflow.core.blade.Vehicle` (rotor blade
+            geometry + hub placement) to fly; default the NASA 1-Pax
+            (:func:`nasa_1pax_vehicle`). Pass e.g.
+            :func:`auraflow.datasets.dji_phantom.dji_phantom_vehicle` for the
+            drone-scale counterpart.
+        multirotor: Flight-dynamics :class:`~auraflow.cona.flight.Multirotor`
+            (mass / inertia / allocation) driving the 6-DOF sim; default the
+            NASA 1-Pax (:func:`nasa_1pax_multirotor`). Should be paired with a
+            matching ``vehicle`` (same hub layout / spin senses).
+        bpf_hz: Blade-passing frequency [Hz] recorded in the metadata; default
+            the NASA 1-Pax :data:`~auraflow.datasets.nasa_1pax.BPF_HZ`. Set the
+            vehicle's own BPF when overriding ``vehicle``.
         n_stations: Radial blade stations (static int).
         n_source_times: Flight/source time samples ``T``; default
             ``max(round(400*duration), 200)`` -- resolves tonal harmonics to a
@@ -283,15 +303,26 @@ def generate_flyover(
     t = jnp.linspace(0.0, duration, n_source_times)
     dt = float(t[1] - t[0])
 
+    # Vehicle geometry + flight-dynamics model: default the NASA 1-Pax, or the
+    # caller's overrides (e.g. the DJI Phantom). A custom vehicle needs an
+    # explicit collective (no generic hover-trim is attempted here).
+    default_vehicle = vehicle is None
     if collective is None:
-        collective = nasa_1pax_hover_collective(n_stations, medium, polar)
-        _maybe_clear(low_memory)
+        if default_vehicle:
+            collective = nasa_1pax_hover_collective(n_stations, medium, polar)
+            _maybe_clear(low_memory)
+        else:
+            raise ValueError(
+                "collective must be provided when a custom vehicle is given "
+                "(e.g. dji_phantom_hover_collective(...))"
+            )
 
-    vehicle = nasa_1pax_vehicle(n_stations)
+    if vehicle is None:
+        vehicle = nasa_1pax_vehicle(n_stations)
     # Gust couples into the flight dynamics only if drag_coeff > 0; here we treat
     # the gust as a free-stream perturbation on the airloads (documented), so the
     # multirotor keeps drag_coeff = 0 and the flight sim tracks the nominal line.
-    mrotor = nasa_1pax_multirotor()
+    mrotor = nasa_1pax_multirotor() if multirotor is None else multirotor
     gains = ControllerGains.for_vehicle(mrotor)
 
     key = jax.random.PRNGKey(int(scenario.seed))
@@ -395,6 +426,8 @@ def generate_flyover(
         c0=float(medium.c0),
         rho0=float(medium.rho0),
     )
+    if bpf_hz is not None:
+        meta["bpf_hz"] = float(bpf_hz)
     return {
         "audio": audio,
         "tonal": tonal,
