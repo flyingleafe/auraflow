@@ -144,3 +144,19 @@ class TestArrivalAndResample:
         grid = default_observer_grid(arrival, 20)
         assert float(grid[0]) == pytest.approx(0.5)  # max of per-source minima
         assert float(grid[-1]) == pytest.approx(1.2)  # min of per-source maxima
+
+    def test_resample_zero_fills_outside_window(self):
+        # A source's arrival span is [0.2, 0.7]; queries before/after must
+        # contribute ZERO (silence), not a clamped constant of the end values.
+        # Clamped extrapolation here is what buried the moving-flyover signal in
+        # a low-frequency pedestal when a shared t_obs outran the near mic's
+        # arrivals (see cfd.flyover / test_flyover pedestal regression).
+        tau = jnp.linspace(0.0, 1.0, 100)
+        arrival = (tau * 0.5 + 0.2)[None, :]  # spans [0.2, 0.7]
+        vals = (2.0 + jnp.sin(2 * jnp.pi * 5 * tau))[None, :]  # nonzero, DC-biased ends
+        t_obs = jnp.linspace(0.0, 1.0, 200)
+        out = np.asarray(resample_sum(arrival, vals, t_obs))
+        t = np.asarray(t_obs)
+        assert np.all(out[t < 0.2 - 1e-9] == 0.0)  # before first arrival: silent
+        assert np.all(out[t > 0.7 + 1e-9] == 0.0)  # after last arrival: silent
+        assert np.abs(out[t <= 0.45].max()) > 1.0  # in-window signal preserved

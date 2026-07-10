@@ -252,5 +252,51 @@ class TestFourRotorAndWav:
         assert abs((wav.shape[1] - 1) / span - fs_out) / fs_out < 1e-3
 
 
+class TestNoLowFrequencyPedestal:
+    def test_near_mic_not_pedestal_dominated_with_wide_mic_array(self):
+        """A shared observer grid serving mics at very different ranges must not
+        inject a low-frequency pedestal at the near mic.
+
+        ``quadrotor_surface_flyover`` builds ONE ``t_obs`` sized to the farthest
+        mic (global ``d.max``). For a near (under-path) mic that grid runs far
+        past the source's last arrival; the resample must leave that tail SILENT.
+        The old clamped extrapolation froze each panel's endpoint integrand into
+        a DC plateau over the tail -- a spurious sub-30 Hz pedestal that buried
+        the blade tone (>90% of the received energy below 30 Hz on the DJI case).
+        """
+        medium = Medium()
+        surf = _small_surface(radius=0.15, subdivisions=1)
+        f0 = 200.0  # clean tone well above the 30 Hz pedestal band
+        dur = 0.25
+        tau = np.linspace(0.0, dur, int(round(dur / (T_BP / 40))))
+        hist = _breathing_history(surf, f0=f0, tau=tau, amp_u=1.5, amp_p=4.0)
+        hist["period_samples"] = int(round((1.0 / f0) / (tau[1] - tau[0])))
+        layout = (np.array([[0.0, 0.0, 0.0]]), np.array([1.0]))
+        # near under-path mic (x=0) + a far mic (x=200 m): the shared grid is
+        # sized by the far mic and overruns the near mic's arrivals by ~0.5 s.
+        obs = np.array([[0.0, 0.0, 0.0], [200.0, 0.0, 0.0]])
+
+        p, t_obs = quadrotor_surface_flyover(
+            surf, hist, layout, speed=8.0, altitude=30.0, t_pass=dur / 2,
+            observers=obs, medium=medium, phase_offsets=[0.0],
+        )  # fmt: skip
+        p = np.asarray(p)
+        t_obs = np.asarray(t_obs)
+        near = p[0]
+        dt = float(t_obs[1] - t_obs[0])
+        n = near.size
+        spec = np.abs(np.fft.rfft(near)) ** 2
+        freqs = np.fft.rfftfreq(n, dt)
+        etot = spec.sum() + 1e-30
+        frac_low = spec[freqs < 30.0].sum() / etot  # pedestal band
+        frac_tone = spec[(freqs > f0 - 40) & (freqs < f0 + 40)].sum() / etot
+        # The pedestal is gone: sub-30 Hz is a small fraction and the tone leads.
+        assert frac_low < 0.15, f"low-frequency pedestal present: {frac_low:.2%} < 30 Hz"
+        assert frac_tone > 0.4, f"blade tone suppressed: only {frac_tone:.2%} near f0"
+        # The out-of-window tail is silent (zero-filled), not a frozen DC plateau.
+        tail = near[int(0.9 * n) :]
+        assert np.allclose(tail, 0.0), "near-mic tail should be silent, not a DC plateau"
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q"]))

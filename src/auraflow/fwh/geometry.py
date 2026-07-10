@@ -134,9 +134,17 @@ def resample_sum(t_arrival: ArrayLike, contrib: ArrayLike, t_obs: ArrayLike) -> 
     ``t_arrival[s, k]``; these are linearly interpolated onto the common
     observer grid ``t_obs`` and summed over sources. Interpolation is
     differentiable with respect to both ``contrib`` and ``t_arrival``. Queries
-    outside a source's arrival span are clamped to its end values (constant
-    extrapolation), so keep ``t_obs`` within the common valid window
-    (:func:`default_observer_grid`).
+    outside a source's arrival span contribute **zero** (there is no signal
+    before a source's earliest emission arrives, nor after its latest): the
+    interpolation is zero-filled, not clamped to the end values. Constant
+    (clamped) extrapolation was a bug -- when a *shared* ``t_obs`` spans a wider
+    window than a given source's arrivals (e.g. one grid serving mics at very
+    different ranges, :func:`~auraflow.cfd.flyover.quadrotor_surface_flyover`),
+    clamping freezes each source's endpoint integrand into a large DC plateau
+    over the out-of-window tail, summing to a spurious low-frequency pedestal
+    that can bury the real signal. Zero-fill instead leaves those regions
+    silent. Within the common valid window (:func:`default_observer_grid`)
+    every source has data everywhere, so the choice is immaterial there.
 
     Args:
         t_arrival: Per-source arrival times [s], shape ``[S, T]``, increasing
@@ -152,7 +160,7 @@ def resample_sum(t_arrival: ArrayLike, contrib: ArrayLike, t_obs: ArrayLike) -> 
     t_obs = jnp.asarray(t_obs)
 
     def one(ta: Array, c: Array) -> Array:
-        return jnp.interp(t_obs, ta, c)
+        return jnp.interp(t_obs, ta, c, left=0.0, right=0.0)
 
     return jnp.sum(jax.vmap(one)(t_arrival, contrib), axis=0)
 
