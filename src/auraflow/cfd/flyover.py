@@ -131,14 +131,17 @@ def tile_surface_history(
     segment is tiled up to ``duration`` with a short crossfade at each seam
     (:func:`_tile_axis1`).
 
-    The **time-mean of ``p`` and ``rho`` is removed per panel** before tiling:
-    the hover CFD carries a large steady (DC) loading/density offset whose FW-H
-    near-field term (``L_r / r^2``) would otherwise dominate the flyover with a
-    non-radiating DC pedestal. The returned ``p``/``rho`` are therefore **gauge
-    fluctuations** (zero time-mean); :func:`quadrotor_surface_flyover` restores
-    the ambient ``p0``/``rho0`` before the FW-H kernel (which expects absolute
-    ``p`` and ``rho``). ``u`` keeps its mean (the steady wake efflux is physical
-    mass flux through the surface).
+    The **time-mean of ``p``, ``rho`` AND ``u`` is removed per panel** before
+    tiling: the hover CFD carries large steady offsets -- DC loading/density,
+    and a steady downwash *through* the permeable surface (measured 3x the
+    fluctuating part on the DJI case) -- whose FW-H terms on a *translating*
+    surface produce a dominating non-radiating low-frequency pedestal
+    (hydrodynamic pseudo-sound: on the warmed DJI run 92% of the received
+    energy sat below 30 Hz with the mean ``u`` kept). Steady subsonic sources
+    in uniform motion radiate nothing physically; only the fluctuations carry
+    sound, so all three fields are reduced to fluctuations consistently.
+    :func:`quadrotor_surface_flyover` restores the ambient ``p0``/``rho0``
+    before the FW-H kernel (which expects absolute ``p`` and ``rho``).
 
     Args:
         hist_arrays: A :class:`~auraflow.cfd.run.SurfaceHistory` or a mapping with
@@ -182,12 +185,14 @@ def tile_surface_history(
         seg_samples = n_periods * period_samples
     seg_samples = min(seg_samples, n_in)
 
-    # Remove the per-panel time-mean of p and rho (the hover DC pedestal).
+    # Remove the per-panel time-mean of p, rho and u (the hover DC pedestal and
+    # the steady surface throughflow -- see docstring).
     seg_rho = rho[:, :seg_samples]
     seg_p = p[:, :seg_samples]
     seg_u = u[:, :seg_samples]
     seg_rho = seg_rho - seg_rho.mean(axis=1, keepdims=True)
     seg_p = seg_p - seg_p.mean(axis=1, keepdims=True)
+    seg_u = seg_u - seg_u.mean(axis=1, keepdims=True)
 
     xfade = int(max(1, round(crossfade_frac * period_samples)))
     n_out = int(round(duration / dtau))
