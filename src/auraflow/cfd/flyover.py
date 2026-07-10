@@ -308,6 +308,7 @@ def quadrotor_surface_flyover(
     *,
     flight_dir: Sequence[float] = (1.0, 0.0, 0.0),
     phase_offsets: Sequence[float] | None = None,
+    phase_seed: int = 20260710,
     boost_u: bool = True,
     n_obs: int | None = None,
     panel_chunk: int = 512,
@@ -346,7 +347,17 @@ def quadrotor_surface_flyover(
         medium: Ambient :class:`~auraflow.core.medium.Medium`.
         flight_dir: Flight direction (unit-normalised internally); default ``+x``.
         phase_offsets: Per-rotor blade-phase offsets as fractions of one
-            blade-passing period; default ``i / Nr`` (evenly staggers the rotors).
+            blade-passing period; default: UNCORRELATED seeded-random fractions
+            (``numpy.random.default_rng(phase_seed)``). Do NOT use an even
+            ``i / Nr`` stagger: with identical periodic data on all rotors and a
+            near-equidistant mic, the coherent sum
+            ``sum_i exp(2*pi*j*k*i/Nr)`` NULLS every harmonic ``k`` not
+            divisible by ``Nr`` -- on the DJI quadrotor this silently erased the
+            BPF fundamental and 2nd/3rd harmonics (only k = 4, 8, ... survived).
+            Real multirotors have uncorrelated rotor phases (and slightly
+            different RPMs), so random phases are the physical default.
+        phase_seed: Seed for the default random ``phase_offsets`` (fixed default
+            keeps runs reproducible).
         boost_u: Galilean-boost the panel fluid velocity into the ground frame.
         n_obs: Observer-time samples (default: one per source ``dtau`` across the
             arrival window, preserving the CFD bandwidth).
@@ -399,8 +410,12 @@ def quadrotor_surface_flyover(
     traj = v_inf[None, :] * (tau - float(t_pass))[:, None] + altitude * up[None, :]
 
     if phase_offsets is None:
-        phase_offsets = [i / n_rotors for i in range(n_rotors)]
-    shifts = [int(round(float(f) * period_samples)) % n_time for f in phase_offsets]
+        # Uncorrelated per-rotor phases (see docstring: an even i/Nr stagger
+        # coherently nulls every harmonic k not divisible by Nr).
+        offsets = [float(x) for x in np.random.default_rng(phase_seed).uniform(0.0, 1.0, n_rotors)]
+    else:
+        offsets = [float(x) for x in phase_offsets]
+    shifts = [int(round(f * period_samples)) % n_time for f in offsets]
 
     # Per-rotor static local geometry (mirrored for counter-rotating rotors).
     # Eager: also build the rolled/ambient/boosted full histories now. Lazy: keep
