@@ -380,6 +380,14 @@ def quadrotor_surface_flyover(
     tau_j = jnp.asarray(tau)
     p_total = jnp.zeros((n_o, n_obs), dtype=jnp.float64)
 
+    # Bound host/device memory regardless of the tiled length: the per-chunk
+    # kernel materializes ~10 [chunk, T, 3] float64 temporaries, so cap
+    # chunk*T at ~6.3M elements (~150 MB per [c,T,3] array). A finely sampled
+    # surface (small CFD dt) otherwise turns panel_chunk=512 into tens of GB
+    # per chunk -- the failure mode that OOM-killed the 145 kHz DJI runs.
+    n_t = int(tau_j.shape[0])
+    panel_chunk = max(16, min(int(panel_chunk), (6 << 20) // max(n_t, 1)))
+
     for i in range(n_rotors):
         local_pts = jnp.asarray(rotor_local_pts[i])  # [S,3]
         nrm = jnp.asarray(rotor_local_nrm[i])  # [S,3]

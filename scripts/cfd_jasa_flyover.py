@@ -88,7 +88,21 @@ def _parser() -> argparse.ArgumentParser:
     # inline CFD (Stage A) knobs -- mirror rotor_resolved_smoke defaults
     p.add_argument("--cells", type=int, default=192)
     p.add_argument("--steps", type=int, default=4000)
-    p.add_argument("--sample-every", type=int, default=5)
+    p.add_argument(
+        "--sample-every",
+        type=int,
+        default=None,
+        help="surface sampling stride in steps (default: derived from --fs-surface)",
+    )
+    p.add_argument(
+        "--fs-surface",
+        type=float,
+        default=48000.0,
+        help="target surface sampling rate [Hz]; the stride is round(1/(fs*dt)). "
+        "Audio band is fs/2; Stage-B memory/time scale LINEARLY with fs -- a raw "
+        "--sample-every on a fine-dt case (e.g. 145 kHz on the 192-cell DJI grid) "
+        "is how the first DJI runs OOMed.",
+    )
     p.add_argument("--warmup", type=int, default=500)
     p.add_argument("--n-stations", type=int, default=24)
     p.add_argument("--n-chord", type=int, default=32)
@@ -201,7 +215,16 @@ def _run_cfd(args: argparse.Namespace, spec: Any) -> tuple[dict, dict, float]:
         sphere_sub=args.sphere_sub,
         vehicle=args.vehicle,
     )
-    hist = run_resolved_surface(built, args.steps, args.sample_every, args.warmup)
+    stride = args.sample_every
+    if stride is None:
+        stride = max(1, round(1.0 / (args.fs_surface * built.case.dt)))
+    fs_actual = 1.0 / (stride * built.case.dt)
+    print(
+        f"[flyover] surface sampling: every {stride} steps -> {fs_actual / 1e3:.1f} kHz "
+        f"(dt={built.case.dt:.3e}s)",
+        flush=True,
+    )
+    hist = run_resolved_surface(built, args.steps, stride, args.warmup)
     surf = {
         "points": np.asarray(built.surface.points, dtype=np.float64),
         "normals": np.asarray(built.surface.normals, dtype=np.float64),
