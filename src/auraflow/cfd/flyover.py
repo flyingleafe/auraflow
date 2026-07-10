@@ -118,6 +118,21 @@ def _tile_axis1(seg: np.ndarray, xfade: int, n_out: int) -> np.ndarray:
     return buf[:, :n_out, ...]
 
 
+def _tile_chunk(seg_chunk: np.ndarray, xfade: int, n_out: int, shift: int) -> np.ndarray:
+    """Tile a panel-CHUNK of a periodic segment, then phase-roll it, lazily.
+
+    Reproduces ``np.roll(_tile_axis1(seg, xfade, n_out), shift, axis=1)[ps:pe]``
+    for the chunk rows ``ps:pe`` -- but only ever allocating the ``[c, n_out, ...]``
+    chunk array, never the full ``[S, n_out, ...]`` tile. This is bit-exact with
+    the eager path because :func:`_tile_axis1` and :func:`numpy.roll` both act
+    independently per row (axis 0), so slicing rows commutes with them.
+    """
+    tiled = _tile_axis1(seg_chunk, xfade, n_out)  # [c, n_out, ...]
+    if shift % n_out != 0:
+        tiled = np.roll(tiled, shift, axis=1)
+    return tiled
+
+
 def tile_surface_history(
     hist_arrays: Mapping[str, Any] | Any,
     omega: float,
@@ -125,6 +140,7 @@ def tile_surface_history(
     duration: float,
     *,
     crossfade_frac: float = 0.125,
+    lazy: bool = False,
 ) -> dict[str, Any]:
     """Tile a short hover surface history to a periodic flyover-length source.
 
@@ -155,12 +171,26 @@ def tile_surface_history(
         duration: Target flyover source duration [s].
         crossfade_frac: Crossfade length as a fraction of one blade-passing
             period (default ``1/8``).
+        lazy: If ``True``, do NOT materialize the full tiled ``[S, T_out]``
+            arrays. Return instead the small trimmed/de-meaned periodic
+            **segment** (``seg_rho [S, seg]``, ``seg_u [S, seg, 3]``,
+            ``seg_p [S, seg]``) plus the tiling recipe (``xfade``, ``n_out``);
+            :func:`quadrotor_surface_flyover` then tiles each panel-chunk to
+            ``T_out`` on the fly (bit-exact with the eager tile -- see
+            :func:`_tile_chunk`), so Stage B never holds a full-length surface
+            history. Use this for real-scale flyovers (the eager arrays are tens
+            of GB at 48 kHz x 5120 panels); the eager default stays for the unit
+            tests and direct inspection. The returned dict carries ``lazy: True``.
 
     Returns:
-        A dict with tiled ``tau [T_out]``, ``rho [S, T_out]``, ``u [S, T_out, 3]``,
-        ``p [S, T_out]`` (``p``/``rho`` gauge/zero-mean) plus bookkeeping
-        ``period_samples`` (samples in one ``T_bp``), ``n_periods`` (periods in
-        the trimmed segment) and ``xfade`` (crossfade samples).
+        Eager (default): a dict with tiled ``tau [T_out]``, ``rho [S, T_out]``,
+        ``u [S, T_out, 3]``, ``p [S, T_out]`` (``p``/``rho`` gauge/zero-mean)
+        plus bookkeeping ``period_samples`` (samples in one ``T_bp``),
+        ``n_periods`` (periods in the trimmed segment) and ``xfade`` (crossfade
+        samples). Lazy: ``lazy: True`` plus ``tau [T_out]``, the segment fields
+        ``seg_rho``/``seg_u``/``seg_p``, ``period_samples``, ``n_periods``,
+        ``xfade`` and ``n_out`` -- a drop-in argument for
+        :func:`quadrotor_surface_flyover`.
     """
     h = _as_hist(hist_arrays)
     tau = h["tau"].astype(np.float64)
@@ -200,11 +230,26 @@ def tile_surface_history(
     xfade = int(max(1, round(crossfade_frac * period_samples)))
     n_out = int(round(duration / dtau))
     n_out = max(n_out, seg_samples)
+    tau_t = tau[0] + np.arange(n_out) * dtau
+
+    if lazy:
+        # Keep only the small periodic segment; tiling happens per panel-chunk
+        # inside quadrotor_surface_flyover (bit-exact -- see _tile_chunk).
+        return {
+            "lazy": True,
+            "tau": tau_t,
+            "seg_rho": seg_rho,
+            "seg_u": seg_u,
+            "seg_p": seg_p,
+            "period_samples": period_samples,
+            "n_periods": n_periods,
+            "xfade": xfade,
+            "n_out": n_out,
+        }
 
     rho_t = _tile_axis1(seg_rho, xfade, n_out)
     p_t = _tile_axis1(seg_p, xfade, n_out)
     u_t = _tile_axis1(seg_u, xfade, n_out)
-    tau_t = tau[0] + np.arange(n_out) * dtau
 
     return {
         "tau": tau_t,
@@ -318,12 +363,27 @@ def quadrotor_surface_flyover(
     n_rotors = positions.shape[0]
     n_panels = points.shape[0]
 
+    lazy = bool(tiled_history.get("lazy", False))
     tau = np.asarray(tiled_history["tau"], dtype=np.float64)
-    rho_g = np.asarray(tiled_history["rho"], dtype=np.float64)  # [S,T] gauge
-    u_g = np.asarray(tiled_history["u"], dtype=np.float64)  # [S,T,3]
-    p_g = np.asarray(tiled_history["p"], dtype=np.float64)  # [S,T] gauge
-    period_samples = int(tiled_history.get("period_samples", rho_g.shape[1]))
     n_time = tau.shape[0]
+    # Pre-bind the per-path locals (exactly one branch below fills each set).
+    seg_rho = seg_u = seg_p = np.empty(0)
+    rho_g = u_g = p_g = np.empty(0)
+    xfade = 0
+    n_out = n_time
+    if lazy:
+        # Small trimmed/de-meaned periodic segment; tiled per panel-chunk below.
+        seg_rho = np.asarray(tiled_history["seg_rho"], dtype=np.float64)  # [S,seg]
+        seg_u = np.asarray(tiled_history["seg_u"], dtype=np.float64)  # [S,seg,3]
+        seg_p = np.asarray(tiled_history["seg_p"], dtype=np.float64)  # [S,seg]
+        xfade = int(tiled_history["xfade"])
+        n_out = int(tiled_history["n_out"])
+        period_samples = int(tiled_history.get("period_samples", n_time))
+    else:
+        rho_g = np.asarray(tiled_history["rho"], dtype=np.float64)  # [S,T] gauge
+        u_g = np.asarray(tiled_history["u"], dtype=np.float64)  # [S,T,3]
+        p_g = np.asarray(tiled_history["p"], dtype=np.float64)  # [S,T] gauge
+        period_samples = int(tiled_history.get("period_samples", rho_g.shape[1]))
 
     obs = np.asarray(observers, dtype=np.float64).reshape(-1, 3)
     n_o = obs.shape[0]
@@ -342,31 +402,38 @@ def quadrotor_surface_flyover(
         phase_offsets = [i / n_rotors for i in range(n_rotors)]
     shifts = [int(round(float(f) * period_samples)) % n_time for f in phase_offsets]
 
-    # Per-rotor static local geometry (mirrored for counter-rotating rotors) and
-    # rolled histories.
+    # Per-rotor static local geometry (mirrored for counter-rotating rotors).
+    # Eager: also build the rolled/ambient/boosted full histories now. Lazy: keep
+    # only the per-rotor mirror flag; the [c,T] history chunks are tiled in the
+    # panel loop (no full-length per-rotor arrays ever exist).
     rotor_local_pts: list[np.ndarray] = []
     rotor_local_nrm: list[np.ndarray] = []
+    rotor_mirror: list[bool] = []
     rotor_rho: list[np.ndarray] = []
     rotor_u: list[np.ndarray] = []
     rotor_p: list[np.ndarray] = []
     for i in range(n_rotors):
         pts_i = points.copy()
         nrm_i = normals.copy()
-        rho_i = np.roll(rho_g, shifts[i], axis=1)
-        p_i = np.roll(p_g, shifts[i], axis=1)
-        u_i = np.roll(u_g, shifts[i], axis=1)
-        if spins[i] < 0:  # counter-rotating: mirror about the rotor xz-plane
+        mirror_i = bool(spins[i] < 0)  # counter-rotating: mirror about xz-plane
+        if mirror_i:
             pts_i = pts_i * _MIRROR_Y
             nrm_i = nrm_i * _MIRROR_Y
-            u_i = u_i * _MIRROR_Y
         # world-static part of the panel position (hub + local); the vehicle
         # translation (traj) is added per source time below.
         rotor_local_pts.append(positions[i][None, :] + pts_i)  # [S,3]
         rotor_local_nrm.append(nrm_i)
-        rotor_rho.append(rho0 + rho_i)  # restore ambient (kernel wants absolute)
-        rotor_p.append(p0 + p_i)
-        u_feed = u_i + v_inf[None, None, :] if boost_u else u_i
-        rotor_u.append(u_feed)
+        rotor_mirror.append(mirror_i)
+        if not lazy:
+            rho_i = np.roll(rho_g, shifts[i], axis=1)
+            p_i = np.roll(p_g, shifts[i], axis=1)
+            u_i = np.roll(u_g, shifts[i], axis=1)
+            if mirror_i:
+                u_i = u_i * _MIRROR_Y
+            rotor_rho.append(rho0 + rho_i)  # restore ambient (kernel wants absolute)
+            rotor_p.append(p0 + p_i)
+            u_feed = u_i + v_inf[None, None, :] if boost_u else u_i
+            rotor_u.append(u_feed)
 
     # Shared observer-time grid over the arrival window (AABB-corner bound).
     all_static = np.concatenate(rotor_local_pts, axis=0)  # [Nr*S,3]
@@ -396,15 +463,37 @@ def quadrotor_surface_flyover(
     n_t = int(tau_j.shape[0])
     panel_chunk = max(16, min(int(panel_chunk), (6 << 20) // max(n_t, 1)))
 
+    traj_j = jnp.asarray(traj)  # [T,3]
+    rho_full = p_full = u_full = jnp.zeros(0)  # eager-only; filled per rotor below
     for i in range(n_rotors):
         local_pts = jnp.asarray(rotor_local_pts[i])  # [S,3]
         nrm = jnp.asarray(rotor_local_nrm[i])  # [S,3]
-        rho_i = jnp.asarray(rotor_rho[i])  # [S,T]
-        p_i = jnp.asarray(rotor_p[i])  # [S,T]
-        u_i = jnp.asarray(rotor_u[i])  # [S,T,3]
-        traj_j = jnp.asarray(traj)  # [T,3]
+        shift_i = shifts[i]
+        mirror_i = rotor_mirror[i]
+        if not lazy:
+            rho_full = jnp.asarray(rotor_rho[i])  # [S,T]
+            p_full = jnp.asarray(rotor_p[i])  # [S,T]
+            u_full = jnp.asarray(rotor_u[i])  # [S,T,3]
         for ps in range(0, n_panels, panel_chunk):
             pe = min(ps + panel_chunk, n_panels)
+            if lazy:
+                # Tile this panel-chunk to full length on the fly, then apply the
+                # ambient restore / mirror / boost that the eager path applied to
+                # the full arrays (bit-exact: tiling, roll and the y-mirror all act
+                # independently per panel-row and per velocity component).
+                seg_u_ch = seg_u[ps:pe] * _MIRROR_Y if mirror_i else seg_u[ps:pe]
+                rho_ch = rho0 + _tile_chunk(seg_rho[ps:pe], xfade, n_out, shift_i)
+                p_ch = p0 + _tile_chunk(seg_p[ps:pe], xfade, n_out, shift_i)
+                u_ch = _tile_chunk(seg_u_ch, xfade, n_out, shift_i)
+                if boost_u:
+                    u_ch = u_ch + v_inf[None, None, :]
+                rho_c = jnp.asarray(rho_ch)  # [c,T]
+                p_c = jnp.asarray(p_ch)  # [c,T]
+                u_c = jnp.asarray(u_ch)  # [c,T,3]
+            else:
+                rho_c = rho_full[ps:pe]
+                p_c = p_full[ps:pe]
+                u_c = u_full[ps:pe]
             # world position per source time: static local + vehicle translation.
             y = local_pts[ps:pe, None, :] + traj_j[None, :, :]  # [c,T,3]
             v = jnp.broadcast_to(jnp.asarray(v_inf), y.shape)  # [c,T,3]
@@ -416,9 +505,9 @@ def quadrotor_surface_flyover(
                     y,
                     v,
                     a,
-                    rho_i[ps:pe],
-                    u_i[ps:pe],
-                    p_i[ps:pe],
+                    rho_c,
+                    u_c,
+                    p_c,
                     nrm[ps:pe],
                     area_j[ps:pe],
                     medium,

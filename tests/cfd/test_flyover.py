@@ -252,6 +252,56 @@ class TestFourRotorAndWav:
         assert abs((wav.shape[1] - 1) / span - fs_out) / fs_out < 1e-3
 
 
+class TestLazyTilingEquivalence:
+    """The lazy per-chunk tiling path must reproduce the eager full-tile path
+    bit-for-bit (GH #3): same crossfade, same phase-roll, same mirror."""
+
+    def _case(self):
+        from auraflow.cona.flight import Multirotor
+
+        surf = _small_surface(radius=0.2, subdivisions=1)
+        dtau = T_BP / 20.0
+        n_in = 73  # not an integer # of periods -> trimming + crossfade exercised
+        tau = np.arange(n_in) * dtau
+        # y-asymmetric history so the xz-mirror on counter-rotating rotors matters.
+        pts_y = surf["points"][:, 1]
+        f0 = OMEGA * N_BLADES / (2 * np.pi)
+        raw = _breathing_history(surf, f0=f0, tau=tau, amp_u=1.5, amp_p=2.0,
+                                 amp_rho=0.01, phase=2.0 * pts_y)  # fmt: skip
+        raw["p"] = raw["p"] * (1.0 + 0.5 * pts_y[:, None])  # extra p asymmetry
+        layout = Multirotor.nasa_1pax()  # 4 rotors, mixed spin signs
+        obs = np.array([[12.0, 5.0, -3.0], [-8.0, -4.0, 2.0], [0.0, 0.0, -6.0]])
+        return surf, raw, layout, obs
+
+    def test_lazy_matches_eager_all_rotors(self):
+        medium = Medium()
+        surf, raw, layout, obs = self._case()
+        duration = 0.3  # >> the trimmed segment: many tiling seams
+        # non-default, uneven phase offsets to exercise the per-rotor roll.
+        phase_offsets = [0.0, 0.37, 0.61, 0.85]
+
+        eager = tile_surface_history(raw, OMEGA, N_BLADES, duration=duration)
+        lazy = tile_surface_history(raw, OMEGA, N_BLADES, duration=duration, lazy=True)
+        assert lazy["lazy"] is True
+        assert "rho" not in lazy  # the full arrays are NOT materialized
+        assert lazy["tau"].shape == eager["tau"].shape
+
+        def _fly(tiled):
+            p, t = quadrotor_surface_flyover(
+                surf, tiled, layout, speed=9.0, altitude=25.0, t_pass=0.12,
+                observers=obs, medium=medium, phase_offsets=phase_offsets,
+                panel_chunk=17, obs_chunk=2,
+            )  # fmt: skip
+            return np.asarray(p), np.asarray(t)
+
+        p_eager, t_e = _fly(eager)
+        p_lazy, t_l = _fly(lazy)
+        assert np.allclose(t_e, t_l, atol=1e-12)
+        # non-trivial signal (equivalence would be vacuous otherwise)
+        assert np.linalg.norm(p_eager) > 1e-6
+        assert np.allclose(p_lazy, p_eager, atol=1e-12, rtol=0.0)
+
+
 class TestNoLowFrequencyPedestal:
     def test_near_mic_not_pedestal_dominated_with_wide_mic_array(self):
         """A shared observer grid serving mics at very different ranges must not

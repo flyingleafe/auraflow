@@ -291,7 +291,10 @@ def main() -> int:
     mics, mic_idx = _select_mics(mics_sel)
     t_pass = 0.5 * duration if args.t_pass is None else float(args.t_pass)
 
-    tiled = tile_surface_history(raw, omega, N_BLADES, duration=duration)
+    # lazy=True: keep only the short periodic segment; quadrotor_surface_flyover
+    # tiles each panel-chunk to full length on the fly, so Stage B never holds a
+    # full [S, T] surface history (fits a ~12 GB Colab worker). See GH #3.
+    tiled = tile_surface_history(raw, omega, N_BLADES, duration=duration, lazy=True)
     print(
         f"[flyover] surface panels={surf['points'].shape[0]} "
         f"tiled T={tiled['tau'].shape[0]} (n_periods={tiled['n_periods']}, "
