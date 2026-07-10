@@ -31,10 +31,13 @@ level-flight cases at advance ratio ``mu = V_inf/(Omega R) <= 0.06``):
 - **Galilean boost of the surface fluid velocity.** The hover CFD is solved with
   quiescent air at infinity in the *vehicle* frame; to radiate to the still-air
   *ground* frame the panel fluid velocity is boosted ``u_lab = u_hover + V_inf``
-  (``boost_u=True``). The extra ``rho0 * v_n`` thickness this introduces integrates
-  to zero over the closed data surface (rigid translation displaces no net
-  volume), so it adds only the (negligible) translation-thickness noise of the
-  fictitious surface.
+  (``boost_u=True``). The steady ``rho0 * v_n`` thickness of the translating
+  closed surface integrates to zero exactly, but its DISCRETE panel sum does
+  not: ``|V_inf|`` exceeds the physical fluctuations by ~42 dB on the DJI case
+  and the quadrature residual dominated the received signal as low-frequency
+  pseudo-sound. The term is therefore dropped symbolically
+  (``include_steady_vn=False`` in the FW-H kernel), which is exact for this
+  closed rigidly-translating surface.
 - **Level attitude.** The small nose-down trim pitch at ``<= 10 m/s`` is neglected
   (the surface is flown with a fixed, level orientation; only its position
   advances).
@@ -421,6 +424,7 @@ def quadrotor_surface_flyover(
                     medium,
                     tau_j,
                     t_obs,
+                    include_steady_vn=False,
                 )
                 p_total = p_total.at[os_:oe].add(pt + pl)
 

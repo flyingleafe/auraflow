@@ -238,6 +238,7 @@ def permeable_surface_sources(
     normal: ArrayLike,
     v: ArrayLike,
     medium: Medium,
+    include_steady_vn: bool = True,
 ) -> tuple[Array, Array]:
     """FW-H permeable-surface monopole and loading sources from panel fields.
 
@@ -248,6 +249,17 @@ def permeable_surface_sources(
         L_i = (p - p0) n_i + rho u_i (u_n - v_n)   (= (p-p0) n_i + rho u_i u_n)
 
     with ``u_n = u . n``, ``v_n = v . n`` and ``n`` the outward unit normal.
+
+    ``include_steady_vn=False`` drops the ``rho0 v_n`` monopole term. For a
+    CLOSED surface in rigid translation this term integrates to zero exactly
+    (a rigidly translating closed surface displaces no net volume), but the
+    discrete panel sum cancels only to quadrature accuracy -- and since
+    ``|v| = V_inf`` can exceed the physical velocity fluctuations by orders of
+    magnitude (42 dB on the DJI flyover case), the quadrature residual buries
+    the real signal in low-frequency pseudo-sound. Dropping the pair
+    symbolically restores exact cancellation. ONLY valid for closed rigidly
+    translating surfaces; keep the default for open surfaces or genuinely
+    deforming/rotating panel motion.
 
     Args:
         rho: Panel density [kg/m^3], shape ``[S, T]``.
@@ -272,7 +284,9 @@ def permeable_surface_sources(
     v = jnp.broadcast_to(jnp.asarray(v, dtype=u.dtype), u.shape)
     un = jnp.sum(u * normal, axis=-1)
     vn = jnp.sum(v * normal, axis=-1)
-    qn = medium.rho0 * vn + rho * (un - vn)
+    qn = rho * (un - vn)
+    if include_steady_vn:
+        qn = qn + medium.rho0 * vn
     load = (p - medium.p0)[..., None] * normal + rho[..., None] * u * (un - vn)[..., None]
     return qn, load
 
@@ -290,6 +304,7 @@ def f1a_permeable(
     medium: Medium,
     tau: ArrayLike,
     t_obs: ArrayLike,
+    include_steady_vn: bool = True,
 ) -> tuple[Array, Array]:
     """Permeable-surface Farassat 1A for a (possibly moving) surface.
 
@@ -313,7 +328,9 @@ def f1a_permeable(
     Returns:
         ``(p_thickness, p_loading)`` [Pa], each shape ``[O, T_obs]``.
     """
-    qn, load = permeable_surface_sources(rho, u, p, normal, v, medium)
+    qn, load = permeable_surface_sources(
+        rho, u, p, normal, v, medium, include_steady_vn=include_steady_vn
+    )
     return f1a_pressure(x_obs, y, v, a, qn, load, medium, tau, t_obs, area)
 
 
