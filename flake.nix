@@ -73,7 +73,7 @@
             ${pre-commit-check.shellHook}
             export LD_LIBRARY_PATH=${pkgs.lib.makeLibraryPath [ pkgs.stdenv.cc.cc.lib pkgs.zlib ]}:$LD_LIBRARY_PATH
             export UV_PYTHON=${python}/bin/python
-            uv sync --quiet
+            uv sync --all-extras --dev
             source .venv/bin/activate
           '';
         };
