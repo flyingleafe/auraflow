@@ -35,7 +35,8 @@ if [ -n "${COMMIT_DLOAD}" ]; then
     [ -n "${JOB_DIR:-}" ] && [ -f "${JOB_DIR}/.env" ] && . "${JOB_DIR}/.env"
     [ -f ./.env ] && . ./.env
     set +a
-    echo "cred check: JOB_DIR=${JOB_DIR:-unset} env_present=$([ -f "${JOB_DIR:-}/.env" ] && echo yes || echo no) AWS_ID_len=${#AWS_ACCESS_KEY_ID}"
+    _awsid="${AWS_ACCESS_KEY_ID:-}"  # :- so `set -u` never aborts on a missing key
+    echo "cred check: JOB_DIR=${JOB_DIR:-unset} jobenv=$([ -f "${JOB_DIR:-}/.env" ] && echo yes || echo no) AWS_ID_len=${#_awsid}"
 fi
 
 # jax[cuda12] loads its CUDA from the pip nvidia wheels; prepend their lib dirs
