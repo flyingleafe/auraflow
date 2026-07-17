@@ -86,6 +86,14 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Omit the lossless float32 arrays field from dload samples.",
     )
+    p.add_argument(
+        "--commit-incremental",
+        action="store_true",
+        help="Re-commit ALL cases generated so far after each case (cumulative "
+        "snapshots). dload commits replace the latest manifest, so this keeps the "
+        "dataset complete-so-far if the job is preempted mid-run (e.g. colab). "
+        "Prior shards dedup, so re-committing is cheap.",
+    )
     return p
 
 
@@ -120,12 +128,14 @@ def _load_result_npz(path: str) -> dict:
         }
 
 
-def _commit(name: str, results, recipe: str, include_arrays: bool, provenance: dict) -> None:
+def _commit(
+    name: str, results, recipe: str, include_arrays: bool, provenance: dict, repo=None
+) -> None:
     from auraflow.datasets.egonoise_io import commit_egonoise
 
     print(f"committing {provenance} -> dload '{name}' ...")
     manifest = commit_egonoise(
-        name, results, meta=provenance, recipe=recipe, include_arrays=include_arrays
+        name, results, repo=repo, meta=provenance, recipe=recipe, include_arrays=include_arrays
     )
     print(f"committed: {manifest}")
 
@@ -170,6 +180,13 @@ def main(argv: list[str] | None = None) -> int:
         f"broadband={not args.no_broadband})"
     )
 
+    # Open the dload repo once (reused across incremental commits).
+    repo = None
+    if args.commit_dload:
+        from auraflow.datasets.egonoise_io import open_repository
+
+        repo = open_repository()
+
     results = []
     for i, (drone, seed) in enumerate(cases):
         t0 = time.perf_counter()
@@ -198,14 +215,31 @@ def main(argv: list[str] | None = None) -> int:
         )
         if args.commit_dload:
             results.append(result)
+            # Cumulative snapshot after each case: latest manifest always holds
+            # everything done so far, so a mid-run preemption still leaves a
+            # complete-so-far dataset (prior shards dedup, so this is cheap).
+            if args.commit_incremental:
+                _commit(
+                    args.commit_dload,
+                    results,
+                    recipe=" ".join(sys.argv),
+                    include_arrays=not args.no_arrays,
+                    provenance={
+                        "generator": "scripts/egonoise_generate.py",
+                        "n_cases": len(results),
+                        "incremental": True,
+                    },
+                    repo=repo,
+                )
 
-    if args.commit_dload:
+    if args.commit_dload and not args.commit_incremental:
         _commit(
             args.commit_dload,
             results,
             recipe=" ".join(sys.argv),
             include_arrays=not args.no_arrays,
             provenance={"generator": "scripts/egonoise_generate.py", "n_cases": len(results)},
+            repo=repo,
         )
 
     return 0

@@ -23,7 +23,9 @@ EXTRAS=(--extra gpu)
 COMMIT_ARGS=()
 if [ -n "${COMMIT_DLOAD}" ]; then
     EXTRAS+=(--extra data)
-    COMMIT_ARGS+=(--commit-dload "${COMMIT_DLOAD}")
+    # Incremental (cumulative) commits so a preempted ephemeral session (e.g.
+    # colab free tier) still leaves a complete-so-far dataset.
+    COMMIT_ARGS+=(--commit-dload "${COMMIT_DLOAD}" --commit-incremental)
 fi
 
 # jax[cuda12] loads its CUDA from the pip nvidia wheels; prepend their lib dirs
