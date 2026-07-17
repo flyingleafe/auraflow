@@ -26,6 +26,16 @@ if [ -n "${COMMIT_DLOAD}" ]; then
     # Incremental (cumulative) commits so a preempted ephemeral session (e.g.
     # colab free tier) still leaves a complete-so-far dataset.
     COMMIT_ARGS+=(--commit-dload "${COMMIT_DLOAD}" --commit-incremental)
+
+    # dload authenticates via boto3's env chain (AWS_ACCESS_KEY_ID/…). omnirun
+    # ships the uncommitted .env out-of-band to "$JOB_DIR/.env" and sources it in
+    # the bootstrap shell; re-source it here (set -a = export) so the creds are
+    # guaranteed in this script's env and inherited by `uv run python`.
+    set -a
+    [ -n "${JOB_DIR:-}" ] && [ -f "${JOB_DIR}/.env" ] && . "${JOB_DIR}/.env"
+    [ -f ./.env ] && . ./.env
+    set +a
+    echo "cred check: JOB_DIR=${JOB_DIR:-unset} env_present=$([ -f "${JOB_DIR:-}/.env" ] && echo yes || echo no) AWS_ID_len=${#AWS_ACCESS_KEY_ID}"
 fi
 
 # jax[cuda12] loads its CUDA from the pip nvidia wheels; prepend their lib dirs
