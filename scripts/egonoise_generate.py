@@ -48,6 +48,16 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Drone keys to generate (auraflow.datasets.drone_egonoise.DRONES).",
     )
     p.add_argument("--seeds", type=int, nargs="+", default=[0], help="PRNG seeds.")
+    p.add_argument(
+        "--rps-list",
+        type=float,
+        nargs="+",
+        default=None,
+        metavar="RPS",
+        help="Prescribed constant per-rotor speeds [rev/s]; one case per "
+        "(drone, rps, seed), vehicle held static (no hover trim). Omit for the "
+        "original hover-trim path (one case per (drone, seed)).",
+    )
     p.add_argument("--altitude", type=float, default=10.0, help="Hover altitude [m].")
     p.add_argument("--duration", type=float, default=1.0, help="Signal duration [s].")
     p.add_argument("--fs", type=float, default=44100.0, help="Audio sample rate [Hz].")
@@ -108,6 +118,40 @@ def _smoke_overrides(args: argparse.Namespace) -> None:
     args.n_fft = 256
     args.gl_iters = 8
     args.obs_chunk = 2
+
+
+def _check_prescribed_peak(result: dict) -> str:
+    """Assert the tonal spectrum peaks on a ``k * rps`` harmonic line.
+
+    For a prescribed-RPS case the four identical 2-bladed rotors emit harmonics
+    of the blade-passing frequency ``BPF = 2 * rps``; the dominant tonal peak
+    must sit on a ``k * rps`` line (and is expected at ``k = 2``, the BPF).
+    Uses the mic with the strongest tonal signal; plain numpy FFT (cheap enough
+    for the smoke path).
+    """
+    import numpy as np
+
+    meta = result["meta"]
+    rps = float(meta["rps"])
+    fs = float(meta["fs"])
+    tonal = np.asarray(result["tonal"])
+    x = tonal[int(np.argmax((tonal**2).sum(axis=1)))]
+    n = x.size
+    spec = np.abs(np.fft.rfft(x * np.hanning(n)))
+    freqs = np.fft.rfftfreq(n, 1.0 / fs)
+    df = fs / n
+    lo = int(np.searchsorted(freqs, 0.5 * rps))  # skip DC / sub-fundamental leakage
+    f_peak = float(freqs[lo + int(np.argmax(spec[lo:]))])
+    harmonic = max(int(round(f_peak / rps)), 1)
+    err = abs(f_peak - harmonic * rps)
+    tol = 2.0 * df
+    msg = (
+        f"tonal peak {f_peak:.1f} Hz = {f_peak / rps:.2f} x rps "
+        f"(nearest line k={harmonic}, err {err:.1f} Hz, bin {df:.1f} Hz)"
+    )
+    if err > tol:
+        raise AssertionError(f"prescribed-RPS check FAILED: {msg}, tol {tol:.1f} Hz")
+    return msg
 
 
 def _load_result_npz(path: str) -> dict:
@@ -172,12 +216,16 @@ def main(argv: list[str] | None = None) -> int:
 
     from auraflow.datasets.drone_egonoise import generate_egonoise, save_egonoise
 
-    cases = [(d, s) for d in args.drones for s in args.seeds]
+    rps_cases: list[float | None] = (
+        [None] if args.rps_list is None else [float(r) for r in args.rps_list]
+    )
+    cases = [(d, r, s) for d in args.drones for r in rps_cases for s in args.seeds]
     os.makedirs(args.out, exist_ok=True)
+    rps_desc = "hover-trim" if args.rps_list is None else f"rps={args.rps_list}"
     print(
         f"generating {len(cases)} ego-noise case(s) -> {args.out} "
         f"(fs={args.fs:g} Hz, dur={args.duration:g} s, n_mics={args.n_mics}, "
-        f"broadband={not args.no_broadband})"
+        f"{rps_desc}, broadband={not args.no_broadband})"
     )
 
     # Open the dload repo once (reused across incremental commits).
@@ -188,7 +236,7 @@ def main(argv: list[str] | None = None) -> int:
         repo = open_repository()
 
     results = []
-    for i, (drone, seed) in enumerate(cases):
+    for i, (drone, rps, seed) in enumerate(cases):
         t0 = time.perf_counter()
         result = generate_egonoise(
             drone,
@@ -197,6 +245,7 @@ def main(argv: list[str] | None = None) -> int:
             fs=args.fs,
             seed=int(seed),
             n_mics=args.n_mics,
+            rps=rps,
             n_stations=args.n_stations,
             include_broadband=not args.no_broadband,
             low_memory=args.low_memory,
@@ -213,6 +262,10 @@ def main(argv: list[str] | None = None) -> int:
             f"  [{i + 1}/{len(cases)}] {result['key']}  audio{tuple(n)}  "
             f"{dt:.2f}s -> {os.path.basename(paths['npz'])}"
         )
+        # Prescribed-RPS smoke assertion: the tonal fundamental must sit on the
+        # prescribed k*rps harmonic lines (cheap numpy FFT; smoke only).
+        if args.smoke and rps is not None:
+            print(f"    smoke check: {_check_prescribed_peak(result)}")
         if args.commit_dload:
             results.append(result)
             # Cumulative snapshot after each case: latest manifest always holds

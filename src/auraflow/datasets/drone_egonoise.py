@@ -355,14 +355,19 @@ def onboard_mic_array(spec: DroneSpec, n_mics: int = 64, *, seed: int = 0) -> Ar
     return jnp.asarray(np.concatenate([near, far], axis=0))
 
 
-def egonoise_id(spec: DroneSpec, scenario: JASAScenario, n_mics: int) -> str:
+def egonoise_id(
+    spec: DroneSpec, scenario: JASAScenario, n_mics: int, rps: float | None = None
+) -> str:
     """Stable, filesystem-safe dataset key for one onboard ego-noise sample.
 
-    ``<drone>_A<alt>_D<dur>_M<n_mics>_s<seed>`` -- the drone plus the hover
-    altitude, duration, mic count and seed (speed is always 0 = hover).
+    ``<drone>[_R<rps>]_A<alt>_D<dur>_M<n_mics>_s<seed>`` -- the drone plus the
+    altitude, duration, mic count and seed (vehicle speed is always 0). The
+    ``R`` segment appears only for prescribed constant-RPS cases; hover-trim
+    cases keep the original (pre-RPS) key format.
     """
+    r_seg = "" if rps is None else f"_R{rps:05.1f}"
     return (
-        f"{spec.name}_A{scenario.altitude:04.1f}_D{scenario.duration:04.1f}"
+        f"{spec.name}{r_seg}_A{scenario.altitude:04.1f}_D{scenario.duration:04.1f}"
         f"_M{int(n_mics):03d}_s{int(scenario.seed):03d}"
     ).replace(".", "p")
 
@@ -375,6 +380,7 @@ def generate_egonoise(
     fs: float = 44100.0,
     seed: int = 0,
     n_mics: int = 64,
+    rps: float | None = None,
     medium: Medium | None = None,
     n_stations: int = 16,
     include_broadband: bool = True,
@@ -390,6 +396,13 @@ def generate_egonoise(
     ``speed = 0`` (hover). The absolute altitude is acoustically irrelevant here
     (free field, no ground/absorption); it only keeps the world frame tidy.
 
+    With ``rps`` set, the rotor speed is **prescribed** instead of trimmed: the
+    vehicle is held static (static-stand test, like DREGON's constant-speed
+    recordings) and all four rotors spin at exactly ``rps`` rev/s
+    (``prescribed_omega`` path of :func:`~auraflow.datasets.jasa.
+    generate_flyover`). The collective stays the hover-trim value -- fixed-pitch
+    props: across the operating range only the motor speed changes.
+
     Args:
         drone: A key in :data:`DRONES` (``"dregon"`` or ``"matrice100"``).
         altitude: Hover altitude (world ``z``) [m].
@@ -397,6 +410,8 @@ def generate_egonoise(
         fs: Audio sample rate [Hz].
         seed: PRNG seed (mic-layout twist, Griffin-Lim phases).
         n_mics: Onboard microphone count (default 64).
+        rps: Prescribed constant per-rotor speed [rev/s], or ``None`` for the
+            hover-trim path (rotor speed near ``spec.hover_rpm``).
         medium: Ambient medium (default sea-level ISA).
         n_stations: Radial blade stations (static int).
         include_broadband: Include the BPM broadband component.
@@ -409,7 +424,8 @@ def generate_egonoise(
     Returns:
         The :func:`~auraflow.datasets.jasa.generate_flyover` result dict, with
         ``"drone"``/``"spec"`` added and ``"mics_body"`` (body-frame positions),
-        and ``meta`` extended with the drone provenance + ``"n_mics"``.
+        and ``meta`` extended with the drone provenance + ``"n_mics"`` +
+        ``"rps"`` (prescribed, or the hover value when ``rps`` is ``None``).
     """
     if drone not in DRONES:
         raise ValueError(f"unknown drone {drone!r}; choose from {sorted(DRONES)}")
@@ -434,6 +450,8 @@ def generate_egonoise(
         seed=seed,
         mics=mics_world,
     )
+    prescribed_omega = None if rps is None else 2.0 * math.pi * float(rps)
+    bpf_hz = spec.bpf_hz if rps is None else _N_BLADES * float(rps)
     result = generate_flyover(
         scenario,
         medium=medium,
@@ -441,19 +459,28 @@ def generate_egonoise(
         collective=collective,
         vehicle=vehicle,
         multirotor=multirotor,
-        bpf_hz=spec.bpf_hz,
+        bpf_hz=bpf_hz,
         n_stations=n_stations,
         include_broadband=include_broadband,
         obs_chunk=obs_chunk,
         low_memory=low_memory,
+        prescribed_omega=prescribed_omega,
         **flyover_kwargs,
     )
     result["drone"] = spec.name
     result["spec"] = spec
     result["mics_body"] = np.asarray(mics_body)
     result["meta"].update(spec.to_meta())
+    # spec.to_meta() carries the *hover* BPF; restore this case's actual BPF
+    # (differs when the rotor speed is prescribed).
+    result["meta"]["bpf_hz"] = float(bpf_hz)
     result["meta"]["n_mics"] = int(n_mics)
-    result["key"] = egonoise_id(spec, scenario, n_mics)
+    # Per-case provenance: the actual per-rotor speed of this sample [rev/s]
+    # (prescribed, or the hover-trim operating point), plus drone/seed which
+    # also live in the spec/scenario meta.
+    result["meta"]["rps"] = float(rps) if rps is not None else spec.hover_rpm / 60.0
+    result["meta"]["rps_prescribed"] = rps is not None
+    result["key"] = egonoise_id(spec, scenario, n_mics, rps=rps)
     return result
 
 
@@ -502,35 +529,42 @@ def generate_grid(
     drones: Sequence[str],
     seeds: Sequence[int],
     *,
+    rps_list: Sequence[float] | None = None,
     altitude: float = 10.0,
     duration: float = 1.0,
     fs: float = 44100.0,
     n_mics: int = 64,
     **gen_kwargs: Any,
 ) -> list[dict[str, Any]]:
-    """Cartesian product of ``drones x seeds`` -> generated ego-noise results.
+    """Cartesian product of ``drones x rps x seeds`` -> generated ego-noise results.
 
     Args:
         drones: Drone keys (:data:`DRONES`).
         seeds: PRNG seeds.
+        rps_list: Prescribed constant per-rotor speeds [rev/s], or ``None`` for
+            a single hover-trim case per (drone, seed).
         altitude, duration, fs, n_mics: Shared scenario settings.
         **gen_kwargs: Forwarded to :func:`generate_egonoise`.
 
     Returns:
-        One result dict per ``(drone, seed)`` combination (drones outermost).
+        One result dict per ``(drone, rps, seed)`` combination (drones
+        outermost, seeds innermost).
     """
+    rps_cases: Sequence[float | None] = [None] if rps_list is None else list(rps_list)
     out: list[dict[str, Any]] = []
     for d in drones:
-        for s in seeds:
-            out.append(
-                generate_egonoise(
-                    d,
-                    altitude=altitude,
-                    duration=duration,
-                    fs=fs,
-                    seed=int(s),
-                    n_mics=n_mics,
-                    **gen_kwargs,
+        for r in rps_cases:
+            for s in seeds:
+                out.append(
+                    generate_egonoise(
+                        d,
+                        altitude=altitude,
+                        duration=duration,
+                        fs=fs,
+                        seed=int(s),
+                        n_mics=n_mics,
+                        rps=None if r is None else float(r),
+                        **gen_kwargs,
+                    )
                 )
-            )
     return out

@@ -14,8 +14,16 @@ set -euo pipefail
 
 DRONES="${DRONES:-dregon matrice100}"
 SEEDS="${SEEDS:-0 1 2}"
+RPS_LIST="${RPS_LIST:-}"      # e.g. "40 45 50 ... 85": prescribed constant RPS cases
+DURATION="${DURATION:-1.0}"   # per-case signal duration [s]
 OUT="${OUT:-results/egonoise}"
 COMMIT_DLOAD="${COMMIT_DLOAD:-}"
+
+RPS_ARGS=()
+if [ -n "${RPS_LIST}" ]; then
+    # shellcheck disable=SC2206
+    RPS_ARGS=(--rps-list ${RPS_LIST})
+fi
 
 # The dload commit needs the `data` extra; add it only when committing so the
 # generation-only path stays lean.
@@ -55,7 +63,8 @@ uv run "${EXTRAS[@]}" python -c "import jax; print('JAX DEVICES:', jax.devices()
 
 # shellcheck disable=SC2086
 uv run "${EXTRAS[@]}" python -u scripts/egonoise_generate.py \
-    --drones ${DRONES} --seeds ${SEEDS} --out "${OUT}" "${COMMIT_ARGS[@]}"
+    --drones ${DRONES} --seeds ${SEEDS} --duration "${DURATION}" \
+    --out "${OUT}" "${RPS_ARGS[@]}" "${COMMIT_ARGS[@]}"
 
 echo "generation done -> ${OUT}"
 ls -la "${OUT}" || true

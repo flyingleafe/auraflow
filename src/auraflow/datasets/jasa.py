@@ -58,7 +58,12 @@ from jax.typing import ArrayLike
 from auraflow.cona.airloads import rotor_section_state
 from auraflow.cona.auralize import synthesize_observer_signal
 from auraflow.cona.broadband import rotor_broadband_spectrogram
-from auraflow.cona.flight import ControllerGains, simulate, straight_flyover
+from auraflow.cona.flight import (
+    ControllerGains,
+    FlightHistory,
+    simulate,
+    straight_flyover,
+)
 from auraflow.cona.gusts import dryden_gust
 from auraflow.cona.tonal import cona_tonal_noise
 from auraflow.core.blade import Vehicle
@@ -229,6 +234,7 @@ def generate_flyover(
     obs_chunk: int = 16,
     low_memory: bool = False,
     wake_kwargs: dict[str, Any] | None = None,
+    prescribed_omega: float | None = None,
 ) -> dict[str, Any]:
     r"""Generate one JASA flyover: scenario -> per-mic auralized audio + metadata.
 
@@ -275,6 +281,14 @@ def generate_flyover(
         wake_kwargs: Extra kwargs for
             :func:`~auraflow.cona.airloads.rotor_section_state` (e.g.
             ``n_wake_azimuth``, ``include_induced``).
+        prescribed_omega: Constant per-rotor speed magnitude [rad/s] or
+            ``None``. When set, the closed-loop flight sim (controller + trim
+            around hover) is bypassed entirely: the vehicle is held static at
+            the reference point (bench/static-stand test) and **all** rotors
+            spin at exactly this speed, like DREGON's constant-speed static
+            recordings. The collective stays whatever the caller passed
+            (fixed-pitch prop: only the motor speed changes). Use with
+            ``scenario.speed = 0``.
 
     Returns:
         A dict with (all NumPy arrays unless noted):
@@ -288,6 +302,7 @@ def generate_flyover(
         - ``"scenario"`` the :class:`JASAScenario`.
     """
     medium = Medium() if medium is None else medium
+    assert medium is not None
     polar = nasa_1pax_polar() if polar is None else polar
     wake_kwargs = {} if wake_kwargs is None else dict(wake_kwargs)
 
@@ -317,8 +332,10 @@ def generate_flyover(
                 "(e.g. dji_phantom_hover_collective(...))"
             )
 
+    assert collective is not None
     if vehicle is None:
         vehicle = nasa_1pax_vehicle(n_stations)
+    assert vehicle is not None
     # Gust couples into the flight dynamics only if drag_coeff > 0; here we treat
     # the gust as a free-stream perturbation on the airloads (documented), so the
     # multirotor keeps drag_coeff = 0 and the flight sim tracks the nominal line.
@@ -338,8 +355,28 @@ def generate_flyover(
         t_pass=scenario.pass_time(),
         origin_xy=(0.0, scenario.lateral_offset),
     )
-    x0, v0, _, _ = ref(jnp.asarray(0.0))
-    flight = simulate(mrotor, gains, ref, t, x0, v0)
+    if prescribed_omega is not None:
+        # Prescribed constant rotor speed on a static vehicle (static-stand /
+        # bench test, like DREGON's constant-speed recordings): bypass the
+        # closed-loop sim and synthesize the FlightHistory directly. The
+        # vehicle sits at the reference point (heading-only attitude), all
+        # rotors spinning at exactly |prescribed_omega|.
+        x_ref, _, _, _ = ref(jnp.asarray(scenario.pass_time()))
+        ch, sh = math.cos(heading), math.sin(heading)
+        r_z = jnp.asarray([[ch, -sh, 0.0], [sh, ch, 0.0], [0.0, 0.0, 1.0]])
+        speeds = jnp.full((n_source_times, mrotor.n_rotors), float(prescribed_omega))
+        flight = FlightHistory(
+            t=t,
+            x=jnp.broadcast_to(x_ref, (n_source_times, 3)),
+            v=jnp.zeros((n_source_times, 3)),
+            R=jnp.broadcast_to(r_z, (n_source_times, 3, 3)),
+            Omega_body=jnp.zeros((n_source_times, 3)),
+            rotor_speeds=speeds,
+            rotor_thrusts=mrotor.k_f * speeds**2,
+        )
+    else:
+        x0, v0, _, _ = ref(jnp.asarray(0.0))
+        flight = simulate(mrotor, gains, ref, t, x0, v0)
     _maybe_clear(low_memory)
 
     # --- Airloads (once; observer-independent) -------------------------------
@@ -426,6 +463,9 @@ def generate_flyover(
         c0=float(medium.c0),
         rho0=float(medium.rho0),
     )
+    if prescribed_omega is not None:
+        meta["prescribed_omega_rad_s"] = float(prescribed_omega)
+        meta["prescribed_rps"] = float(prescribed_omega) / (2.0 * math.pi)
     if bpf_hz is not None:
         meta["bpf_hz"] = float(bpf_hz)
     return {
